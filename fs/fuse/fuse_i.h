@@ -374,9 +374,6 @@ struct fuse_req {
 	/** Inode used in the request or NULL */
 	struct inode *inode;
 
-	/** Path used for completing d_canonical_path */
-	struct path *canonical_path;
-
 	/** AIO control block */
 	struct fuse_io_priv *io;
 
@@ -696,7 +693,6 @@ static inline u64 get_node_id(struct inode *inode)
 
 static inline void fuse_make_bad(struct inode *inode)
 {
-	remove_inode_hash(inode);
 	set_bit(FUSE_I_BAD, &get_fuse_inode(inode)->state);
 }
 

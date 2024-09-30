@@ -52,7 +52,6 @@
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/processor.h>
-#include <asm/scs.h>
 #include <asm/smp_plat.h>
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -347,9 +346,6 @@ void cpu_die(void)
 {
 	unsigned int cpu = smp_processor_id();
 
-	/* Save the shadow stack pointer before exiting the idle task */
-	scs_save(current);
-
 	idle_task_exit();
 
 	local_irq_disable();
@@ -415,6 +411,11 @@ void __init smp_cpus_done(unsigned int max_cpus)
 void __init smp_prepare_boot_cpu(void)
 {
 	set_my_cpu_offset(per_cpu_offset(smp_processor_id()));
+	/*
+	 * Initialise the static keys early as they may be enabled by the
+	 * cpufeature code.
+	 */
+	jump_label_init();
 	cpuinfo_store_boot_cpu();
 }
 

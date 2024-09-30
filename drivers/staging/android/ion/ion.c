@@ -42,7 +42,6 @@
 
 static struct ion_device *internal_dev;
 static int heap_id;
-static atomic_long_t total_heap_bytes;
 
 bool ion_buffer_cached(struct ion_buffer *buffer)
 {
@@ -121,7 +120,6 @@ static struct ion_buffer *ion_buffer_create(struct ion_heap *heap,
 	mutex_lock(&dev->buffer_lock);
 	ion_buffer_add(dev, buffer);
 	mutex_unlock(&dev->buffer_lock);
-	atomic_long_add(len, &total_heap_bytes);
 	return buffer;
 
 err1:
@@ -150,7 +148,6 @@ static void _ion_buffer_destroy(struct ion_buffer *buffer)
 	mutex_lock(&dev->buffer_lock);
 	rb_erase(&buffer->node, &dev->buffers);
 	mutex_unlock(&dev->buffer_lock);
-	atomic_long_sub(buffer->size, &total_heap_bytes);
 
 	if (heap->flags & ION_HEAP_FLAG_DEFER_FREE)
 		ion_heap_freelist_add(heap, buffer);
@@ -329,41 +326,30 @@ static void ion_dma_buf_release(struct dma_buf *dmabuf)
 static void *ion_dma_buf_kmap(struct dma_buf *dmabuf, unsigned long offset)
 {
 	struct ion_buffer *buffer = dmabuf->priv;
-	void *vaddr;
 
-	if (!buffer->heap->ops->map_kernel) {
-		pr_err("%s: map kernel is not implemented by this heap.\n",
-		       __func__);
-		return ERR_PTR(-ENOTTY);
-	}
-	mutex_lock(&buffer->lock);
-	vaddr = ion_buffer_kmap_get(buffer);
-	mutex_unlock(&buffer->lock);
-
-	if (IS_ERR(vaddr))
-		return vaddr;
-
-	return vaddr + offset * PAGE_SIZE;
+	return buffer->vaddr + offset * PAGE_SIZE;
 }
 
 static void ion_dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long offset,
 			       void *ptr)
 {
-	struct ion_buffer *buffer = dmabuf->priv;
-
-	if (buffer->heap->ops->map_kernel) {
-		mutex_lock(&buffer->lock);
-		ion_buffer_kmap_put(buffer);
-		mutex_unlock(&buffer->lock);
-	}
-
 }
 
 static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 					enum dma_data_direction direction)
 {
 	struct ion_buffer *buffer = dmabuf->priv;
+	void *vaddr;
 	struct ion_dma_buf_attachment *a;
+
+	/*
+	 * TODO: Move this elsewhere because we don't always need a vaddr
+	 */
+	if (buffer->heap->ops->map_kernel) {
+		mutex_lock(&buffer->lock);
+		vaddr = ion_buffer_kmap_get(buffer);
+		mutex_unlock(&buffer->lock);
+	}
 
 	mutex_lock(&buffer->lock);
 	list_for_each_entry(a, &buffer->attachments, list) {
@@ -380,6 +366,12 @@ static int ion_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
 {
 	struct ion_buffer *buffer = dmabuf->priv;
 	struct ion_dma_buf_attachment *a;
+
+	if (buffer->heap->ops->map_kernel) {
+		mutex_lock(&buffer->lock);
+		ion_buffer_kmap_put(buffer);
+		mutex_unlock(&buffer->lock);
+	}
 
 	mutex_lock(&buffer->lock);
 	list_for_each_entry(a, &buffer->attachments, list) {
@@ -600,56 +592,6 @@ void ion_device_add_heap(struct ion_heap *heap)
 }
 EXPORT_SYMBOL(ion_device_add_heap);
 
-static ssize_t
-total_heaps_kb_show(struct kobject *kobj, struct kobj_attribute *attr,
-		    char *buf)
-{
-	u64 size_in_bytes = atomic_long_read(&total_heap_bytes);
-
-	return sprintf(buf, "%llu\n", div_u64(size_in_bytes, 1024));
-}
-
-static ssize_t
-total_pools_kb_show(struct kobject *kobj, struct kobj_attribute *attr,
-		    char *buf)
-{
-	u64 size_in_bytes = ion_page_pool_nr_pages() * PAGE_SIZE;
-
-	return sprintf(buf, "%llu\n", div_u64(size_in_bytes, 1024));
-}
-
-static struct kobj_attribute total_heaps_kb_attr =
-	__ATTR_RO(total_heaps_kb);
-
-static struct kobj_attribute total_pools_kb_attr =
-	__ATTR_RO(total_pools_kb);
-
-static struct attribute *ion_device_attrs[] = {
-	&total_heaps_kb_attr.attr,
-	&total_pools_kb_attr.attr,
-	NULL,
-};
-
-ATTRIBUTE_GROUPS(ion_device);
-
-static int ion_init_sysfs(void)
-{
-	struct kobject *ion_kobj;
-	int ret;
-
-	ion_kobj = kobject_create_and_add("ion", kernel_kobj);
-	if (!ion_kobj)
-		return -ENOMEM;
-
-	ret = sysfs_create_groups(ion_kobj, ion_device_groups);
-	if (ret) {
-		kobject_put(ion_kobj);
-		return ret;
-	}
-
-	return 0;
-}
-
 static int ion_device_create(void)
 {
 	struct ion_device *idev;
@@ -666,13 +608,8 @@ static int ion_device_create(void)
 	ret = misc_register(&idev->dev);
 	if (ret) {
 		pr_err("ion: failed to register misc device.\n");
-		goto err_reg;
-	}
-
-	ret = ion_init_sysfs();
-	if (ret) {
-		pr_err("ion: failed to add sysfs attributes.\n");
-		goto err_sysfs;
+		kfree(idev);
+		return ret;
 	}
 
 	idev->debug_root = debugfs_create_dir("ion", NULL);
@@ -688,11 +625,5 @@ debugfs_done:
 	plist_head_init(&idev->heaps);
 	internal_dev = idev;
 	return 0;
-
-err_sysfs:
-	misc_deregister(&idev->dev);
-err_reg:
-	kfree(idev);
-	return ret;
 }
 subsys_initcall(ion_device_create);

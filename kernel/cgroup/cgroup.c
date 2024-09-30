@@ -54,7 +54,6 @@
 #include <linux/proc_ns.h>
 #include <linux/nsproxy.h>
 #include <linux/file.h>
-#include <linux/psi.h>
 #include <net/sock.h>
 
 #define CREATE_TRACE_POINTS
@@ -202,22 +201,6 @@ struct cgroup_namespace init_cgroup_ns = {
 
 static struct file_system_type cgroup2_fs_type;
 static struct cftype cgroup_base_files[];
-
-/* cgroup optional features */
-enum cgroup_opt_features {
-#ifdef CONFIG_PSI
-	OPT_FEATURE_PRESSURE,
-#endif
-	OPT_FEATURE_COUNT
-};
-
-static const char *cgroup_opt_feature_names[OPT_FEATURE_COUNT] = {
-#ifdef CONFIG_PSI
-	"pressure",
-#endif
-};
-
-static u16 cgroup_feature_disable_mask __read_mostly;
 
 static int cgroup_apply_control(struct cgroup *cgrp);
 static void cgroup_finalize_control(struct cgroup *cgrp, int ret);
@@ -816,7 +799,7 @@ static void css_set_move_task(struct task_struct *task,
 		 */
 		WARN_ON_ONCE(task->flags & PF_EXITING);
 
-		cgroup_move_task(task, to_cset);
+		rcu_assign_pointer(task->cgroups, to_cset);
 		list_add_tail(&task->cg_list, use_mg_tasks ? &to_cset->mg_tasks :
 							     &to_cset->tasks);
 	}
@@ -1956,9 +1939,6 @@ int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask, int ref_flags)
 	ret = rebind_subsystems(root, ss_mask);
 	if (ret)
 		goto destroy_root;
-
-	ret = cgroup_bpf_inherit(root_cgrp);
-	WARN_ON_ONCE(ret);
 
 	trace_cgroup_setup_root(root);
 
@@ -3404,101 +3384,6 @@ static int cgroup_stat_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-#ifdef CONFIG_PSI
-static int cgroup_io_pressure_show(struct seq_file *seq, void *v)
-{
-	return psi_show(seq, &seq_css(seq)->cgroup->psi, PSI_IO);
-}
-static int cgroup_memory_pressure_show(struct seq_file *seq, void *v)
-{
-	return psi_show(seq, &seq_css(seq)->cgroup->psi, PSI_MEM);
-}
-static int cgroup_cpu_pressure_show(struct seq_file *seq, void *v)
-{
-	return psi_show(seq, &seq_css(seq)->cgroup->psi, PSI_CPU);
-}
-
-static ssize_t cgroup_pressure_write(struct kernfs_open_file *of, char *buf,
-					  size_t nbytes, enum psi_res res)
-{
-	struct cgroup_file_ctx *ctx = of->priv;
-	struct psi_trigger *new;
-	struct cgroup *cgrp;
-
-	cgrp = cgroup_kn_lock_live(of->kn, false);
-	if (!cgrp)
-		return -ENODEV;
-
-	cgroup_get(cgrp);
-	cgroup_kn_unlock(of->kn);
-
-	/* Allow only one trigger per file descriptor */
-	if (ctx->psi.trigger) {
-		cgroup_put(cgrp);
-		return -EBUSY;
-	}
-
-	new = psi_trigger_create(&cgrp->psi, buf, nbytes, res);
-	if (IS_ERR(new)) {
-		cgroup_put(cgrp);
-		return PTR_ERR(new);
-	}
-
-	smp_store_release(&ctx->psi.trigger, new);
-	cgroup_put(cgrp);
-
-	return nbytes;
-}
-
-static ssize_t cgroup_io_pressure_write(struct kernfs_open_file *of,
-					  char *buf, size_t nbytes,
-					  loff_t off)
-{
-	return cgroup_pressure_write(of, buf, nbytes, PSI_IO);
-}
-
-static ssize_t cgroup_memory_pressure_write(struct kernfs_open_file *of,
-					  char *buf, size_t nbytes,
-					  loff_t off)
-{
-	return cgroup_pressure_write(of, buf, nbytes, PSI_MEM);
-}
-
-static ssize_t cgroup_cpu_pressure_write(struct kernfs_open_file *of,
-					  char *buf, size_t nbytes,
-					  loff_t off)
-{
-	return cgroup_pressure_write(of, buf, nbytes, PSI_CPU);
-}
-
-static unsigned int cgroup_pressure_poll(struct kernfs_open_file *of,
-					 poll_table *pt)
-{
-	struct cgroup_file_ctx *ctx = of->priv;
-
-	return psi_trigger_poll(&ctx->psi.trigger, of->file, pt);
-}
-
-static void cgroup_pressure_release(struct kernfs_open_file *of)
-{
-	struct cgroup_file_ctx *ctx = of->priv;
-
-	psi_trigger_destroy(ctx->psi.trigger);
-}
-
-bool cgroup_psi_enabled(void)
-{
-	return (cgroup_feature_disable_mask & (1 << OPT_FEATURE_PRESSURE)) == 0;
-}
-
-#else /* CONFIG_PSI */
-bool cgroup_psi_enabled(void)
-{
-	return false;
-}
-
-#endif /* CONFIG_PSI */
-
 static int cgroup_file_open(struct kernfs_open_file *of)
 {
 	struct cftype *cft = of->kn->priv;
@@ -3585,17 +3470,6 @@ static ssize_t cgroup_file_write(struct kernfs_open_file *of, char *buf,
 	return ret ?: nbytes;
 }
 
-static unsigned int cgroup_file_poll(struct kernfs_open_file *of,
-				     poll_table *pt)
-{
-	struct cftype *cft = of->kn->priv;
-
-	if (cft->poll)
-		return cft->poll(of, pt);
-
-	return kernfs_generic_poll(of, pt);
-}
-
 static void *cgroup_seqfile_start(struct seq_file *seq, loff_t *ppos)
 {
 	return seq_cft(seq)->seq_start(seq, ppos);
@@ -3634,7 +3508,6 @@ static struct kernfs_ops cgroup_kf_single_ops = {
 	.open			= cgroup_file_open,
 	.release		= cgroup_file_release,
 	.write			= cgroup_file_write,
-	.poll			= cgroup_file_poll,
 	.seq_show		= cgroup_seqfile_show,
 };
 
@@ -3643,7 +3516,6 @@ static struct kernfs_ops cgroup_kf_ops = {
 	.open			= cgroup_file_open,
 	.release		= cgroup_file_release,
 	.write			= cgroup_file_write,
-	.poll			= cgroup_file_poll,
 	.seq_start		= cgroup_seqfile_start,
 	.seq_next		= cgroup_seqfile_next,
 	.seq_stop		= cgroup_seqfile_stop,
@@ -3720,8 +3592,6 @@ static int cgroup_addrm_files(struct cgroup_subsys_state *css,
 restart:
 	for (cft = cfts; cft != cft_end && cft->name[0] != '\0'; cft++) {
 		/* does cft->flags tell us to skip this file on @cgrp? */
-		if ((cft->flags & CFTYPE_PRESSURE) && !cgroup_psi_enabled())
-			continue;
 		if ((cft->flags & __CFTYPE_ONLY_ON_DFL) && !cgroup_on_dfl(cgrp))
 			continue;
 		if ((cft->flags & __CFTYPE_NOT_ON_DFL) && cgroup_on_dfl(cgrp))
@@ -3797,9 +3667,6 @@ static int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
 		struct kernfs_ops *kf_ops;
 
 		WARN_ON(cft->ss || cft->kf_ops);
-
-		if ((cft->flags & CFTYPE_PRESSURE) && !cgroup_psi_enabled())
-			continue;
 
 		if (cft->seq_start)
 			kf_ops = &cgroup_kf_ops;
@@ -4708,32 +4575,6 @@ static struct cftype cgroup_base_files[] = {
 		.name = "cgroup.stat",
 		.seq_show = cgroup_stat_show,
 	},
-#ifdef CONFIG_PSI
-	{
-		.name = "io.pressure",
-		.flags = CFTYPE_NOT_ON_ROOT | CFTYPE_PRESSURE,
-		.seq_show = cgroup_io_pressure_show,
-		.write = cgroup_io_pressure_write,
-		.poll = cgroup_pressure_poll,
-		.release = cgroup_pressure_release,
-	},
-	{
-		.name = "memory.pressure",
-		.flags = CFTYPE_NOT_ON_ROOT | CFTYPE_PRESSURE,
-		.seq_show = cgroup_memory_pressure_show,
-		.write = cgroup_memory_pressure_write,
-		.poll = cgroup_pressure_poll,
-		.release = cgroup_pressure_release,
-	},
-	{
-		.name = "cpu.pressure",
-		.flags = CFTYPE_NOT_ON_ROOT | CFTYPE_PRESSURE,
-		.seq_show = cgroup_cpu_pressure_show,
-		.write = cgroup_cpu_pressure_write,
-		.poll = cgroup_pressure_poll,
-		.release = cgroup_pressure_release,
-	},
-#endif /* CONFIG_PSI */
 	{ }	/* terminate */
 };
 
@@ -4794,8 +4635,6 @@ static void css_free_work_fn(struct work_struct *work)
 			 */
 			cgroup_put(cgroup_parent(cgrp));
 			kernfs_put(cgrp->kn);
-			if (cgroup_on_dfl(cgrp))
-				psi_cgroup_free(cgrp);
 			kfree(cgrp);
 		} else {
 			/*
@@ -5040,9 +4879,6 @@ static struct cgroup *cgroup_create(struct cgroup *parent)
 	cgrp->self.parent = &parent->self;
 	cgrp->root = root;
 	cgrp->level = level;
-	ret = cgroup_bpf_inherit(cgrp);
-	if (ret)
-		goto out_idr_free;
 
 	spin_lock_irq(&css_set_lock);
 	for (tcgrp = cgrp; tcgrp; tcgrp = cgroup_parent(tcgrp)) {
@@ -5079,18 +4915,13 @@ static struct cgroup *cgroup_create(struct cgroup *parent)
 	if (!cgroup_on_dfl(cgrp))
 		cgrp->subtree_control = cgroup_control(cgrp);
 
-	if (cgroup_on_dfl(cgrp)) {
-		ret = psi_cgroup_alloc(cgrp);
-		if (ret)
-			goto out_idr_free;
-	}
+	if (parent)
+		cgroup_bpf_inherit(cgrp, parent);
 
 	cgroup_propagate_control(cgrp);
 
 	return cgrp;
 
-out_idr_free:
-	cgroup_idr_remove(&root->cgroup_idr, cgrp->id);
 out_cancel_ref:
 	percpu_ref_exit(&cgrp->self.refcnt);
 out_free_cgrp:
@@ -5891,15 +5722,6 @@ static int __init cgroup_disable(char *str)
 			pr_info("Disabling %s control group subsystem\n",
 				ss->name);
 		}
-
-		for (i = 0; i < OPT_FEATURE_COUNT; i++) {
-			if (strcmp(token, cgroup_opt_feature_names[i]))
-				continue;
-			cgroup_feature_disable_mask |= 1 << i;
-			pr_info("Disabling %s control group feature\n",
-				cgroup_opt_feature_names[i]);
-			break;
-		}
 	}
 	return 1;
 }
@@ -6105,23 +5927,14 @@ void cgroup_sk_free(struct sock_cgroup_data *skcd)
 #endif	/* CONFIG_SOCK_CGROUP_DATA */
 
 #ifdef CONFIG_CGROUP_BPF
-int cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
-		      enum bpf_attach_type type, u32 flags)
+int cgroup_bpf_update(struct cgroup *cgrp, struct bpf_prog *prog,
+		      enum bpf_attach_type type, bool overridable)
 {
+	struct cgroup *parent = cgroup_parent(cgrp);
 	int ret;
 
 	mutex_lock(&cgroup_mutex);
-	ret = __cgroup_bpf_attach(cgrp, prog, type, flags);
-	mutex_unlock(&cgroup_mutex);
-	return ret;
-}
-int cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
-		      enum bpf_attach_type type, u32 flags)
-{
-	int ret;
-
-	mutex_lock(&cgroup_mutex);
-	ret = __cgroup_bpf_detach(cgrp, prog, type, flags);
+	ret = __cgroup_bpf_update(cgrp, parent, prog, type, overridable);
 	mutex_unlock(&cgroup_mutex);
 	return ret;
 }

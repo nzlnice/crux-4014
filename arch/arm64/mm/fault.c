@@ -39,7 +39,6 @@
 #include <asm/exception.h>
 #include <asm/debug-monitors.h>
 #include <asm/esr.h>
-#include <asm/kasan.h>
 #include <asm/sysreg.h>
 #include <asm/system_misc.h>
 #include <asm/pgtable.h>
@@ -127,18 +126,6 @@ static void mem_abort_decode(unsigned int esr)
 		data_abort_decode(esr);
 }
 
-static inline bool is_ttbr0_addr(unsigned long addr)
-{
-	/* entry assembly clears tags for TTBR0 addrs */
-	return addr < TASK_SIZE;
-}
-
-static inline bool is_ttbr1_addr(unsigned long addr)
-{
-	/* TTBR1 addresses may have a tag if KASAN_SW_TAGS is in use */
-	return arch_kasan_reset_tag(addr) >= VA_START;
-}
-
 /*
  * Dump out the page tables associated with 'addr' in the currently active mm.
  */
@@ -147,7 +134,7 @@ void show_pte(unsigned long addr)
 	struct mm_struct *mm;
 	pgd_t *pgd;
 
-	if (is_ttbr0_addr(addr)) {
+	if (addr < TASK_SIZE) {
 		/* TTBR0 */
 		mm = current->active_mm;
 		if (mm == &init_mm) {
@@ -155,7 +142,7 @@ void show_pte(unsigned long addr)
 				 addr);
 			return;
 		}
-	} else if (is_ttbr1_addr(addr)) {
+	} else if (addr >= VA_START) {
 		/* TTBR1 */
 		mm = &init_mm;
 	} else {
@@ -255,7 +242,7 @@ static inline bool is_permission_fault(unsigned int esr, struct pt_regs *regs,
 	if (fsc_type == ESR_ELx_FSC_PERM)
 		return true;
 
-	if (is_ttbr0_addr(addr) && system_uses_ttbr0_pan())
+	if (addr < TASK_SIZE && system_uses_ttbr0_pan())
 		return fsc_type == ESR_ELx_FSC_FAULT &&
 			(regs->pstate & PSR_PAN_BIT);
 
@@ -439,7 +426,7 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 		mm_flags |= FAULT_FLAG_WRITE;
 	}
 
-	if (is_ttbr0_addr(addr) && is_permission_fault(esr, regs, addr)) {
+	if (addr < TASK_SIZE && is_permission_fault(esr, regs, addr)) {
 		/* regs->orig_addr_limit may be 0 if we entered from EL0 */
 		if (regs->orig_addr_limit == KERNEL_DS)
 			die("Accessing user space memory with fs=KERNEL_DS", regs, esr);
@@ -593,7 +580,7 @@ static int __kprobes do_translation_fault(unsigned long addr,
 					  unsigned int esr,
 					  struct pt_regs *regs)
 {
-	if (is_ttbr0_addr(addr))
+	if (addr < TASK_SIZE)
 		return do_page_fault(addr, esr, regs);
 
 	do_bad_area(addr, esr, regs);
@@ -779,7 +766,7 @@ asmlinkage void __exception do_el0_ia_bp_hardening(unsigned long addr,
 	 * re-enabled IRQs. If the address is a kernel address, apply
 	 * BP hardening prior to enabling IRQs and pre-emption.
 	 */
-	if (!is_ttbr0_addr(addr))
+	if (addr > TASK_SIZE)
 		arm64_apply_bp_hardening();
 
 	local_irq_enable();
@@ -798,7 +785,7 @@ asmlinkage void __exception do_sp_pc_abort(unsigned long addr,
 	struct task_struct *tsk = current;
 
 	if (user_mode(regs)) {
-		if (!is_ttbr0_addr(instruction_pointer(regs)))
+		if (instruction_pointer(regs) > TASK_SIZE)
 			arm64_apply_bp_hardening();
 		local_irq_enable();
 	}
@@ -863,7 +850,7 @@ asmlinkage int __exception do_debug_exception(unsigned long addr_if_watchpoint,
 	if (interrupts_enabled(regs))
 		trace_hardirqs_off();
 
-	if (user_mode(regs) && !is_ttbr0_addr(pc))
+	if (user_mode(regs) && pc > TASK_SIZE)
 		arm64_apply_bp_hardening();
 
 	if (!inf->fn(addr_if_watchpoint, esr, regs)) {

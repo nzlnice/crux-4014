@@ -586,6 +586,7 @@ static int ramoops_init_przs(const char *name,
 	}
 
 	zone_sz = mem_sz / *cnt;
+	zone_sz = ALIGN_DOWN(zone_sz, 2);
 	if (!zone_sz) {
 		dev_err(dev, "%s zone size == 0\n", name);
 		goto fail;
@@ -716,12 +717,6 @@ static int ramoops_parse_dt(struct platform_device *pdev,
 #undef parse_size
 
 	return 0;
-}
-
-void notrace ramoops_console_write_buf(const char *buf, size_t size)
-{
-	struct ramoops_context *cxt = &oops_cxt;
-	persistent_ram_write(cxt->cprz, buf, size);
 }
 
 static int ramoops_probe(struct platform_device *pdev)

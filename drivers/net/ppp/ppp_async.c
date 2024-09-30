@@ -474,6 +474,10 @@ ppp_async_ioctl(struct ppp_channel *chan, unsigned int cmd, unsigned long arg)
 	case PPPIOCSMRU:
 		if (get_user(val, p))
 			break;
+		if (val > U16_MAX) {
+			err = -EINVAL;
+			break;
+		}
 		if (val < PPP_MRU)
 			val = PPP_MRU;
 		ap->mru = val;
@@ -770,7 +774,7 @@ process_input_packet(struct asyncppp *ap)
 {
 	struct sk_buff *skb;
 	unsigned char *p;
-	unsigned int len, fcs;
+	unsigned int len, fcs, proto;
 
 	skb = ap->rpkt;
 	if (ap->state & (SC_TOSS | SC_ESCAPE))
@@ -799,14 +803,14 @@ process_input_packet(struct asyncppp *ap)
 			goto err;
 		p = skb_pull(skb, 2);
 	}
-
-	/* If protocol field is not compressed, it can be LCP packet */
-	if (!(p[0] & 0x01)) {
-		unsigned int proto;
-
+	proto = p[0];
+	if (proto & 1) {
+		/* protocol is compressed */
+		*(u8 *)skb_push(skb, 1) = 0;
+	} else {
 		if (skb->len < 2)
 			goto err;
-		proto = (p[0] << 8) + p[1];
+		proto = (proto << 8) + p[1];
 		if (proto == PPP_LCP)
 			async_lcp_peek(ap, p, skb->len, 1);
 	}

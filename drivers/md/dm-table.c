@@ -21,8 +21,6 @@
 #include <linux/blk-mq.h>
 #include <linux/mount.h>
 #include <linux/dax.h>
-#include <linux/bio.h>
-#include <linux/keyslot-manager.h>
 
 #define DM_MSG_PREFIX "table"
 
@@ -189,7 +187,12 @@ static int alloc_targets(struct dm_table *t, unsigned int num)
 int dm_table_create(struct dm_table **result, fmode_t mode,
 		    unsigned num_targets, struct mapped_device *md)
 {
-	struct dm_table *t = kzalloc(sizeof(*t), GFP_KERNEL);
+	struct dm_table *t;
+
+	if (num_targets > DM_MAX_TARGETS)
+		return -EOVERFLOW;
+
+	t = kzalloc(sizeof(*t), GFP_KERNEL);
 
 	if (!t)
 		return -ENOMEM;
@@ -204,7 +207,7 @@ int dm_table_create(struct dm_table **result, fmode_t mode,
 
 	if (!num_targets) {
 		kfree(t);
-		return -ENOMEM;
+		return -EOVERFLOW;
 	}
 
 	if (alloc_targets(t, num_targets)) {
@@ -1624,54 +1627,6 @@ static void dm_table_verify_integrity(struct dm_table *t)
 	}
 }
 
-#ifdef CONFIG_BLK_INLINE_ENCRYPTION
-static int device_intersect_crypto_modes(struct dm_target *ti,
-					 struct dm_dev *dev, sector_t start,
-					 sector_t len, void *data)
-{
-	struct keyslot_manager *parent = data;
-	struct keyslot_manager *child = bdev_get_queue(dev->bdev)->ksm;
-
-	keyslot_manager_intersect_modes(parent, child);
-	return 0;
-}
-
-/*
- * Update the inline crypto modes supported by 'q->ksm' to be the intersection
- * of the modes supported by all targets in the table.
- *
- * For any mode to be supported at all, all targets must have explicitly
- * declared that they can pass through inline crypto support.  For a particular
- * mode to be supported, all underlying devices must also support it.
- *
- * Assume that 'q->ksm' initially declares all modes to be supported.
- */
-static void dm_calculate_supported_crypto_modes(struct dm_table *t,
-						struct request_queue *q)
-{
-	struct dm_target *ti;
-	unsigned int i;
-
-	for (i = 0; i < dm_table_get_num_targets(t); i++) {
-		ti = dm_table_get_target(t, i);
-
-		if (!ti->may_passthrough_inline_crypto) {
-			keyslot_manager_intersect_modes(q->ksm, NULL);
-			return;
-		}
-		if (!ti->type->iterate_devices)
-			continue;
-		ti->type->iterate_devices(ti, device_intersect_crypto_modes,
-					  q->ksm);
-	}
-}
-#else /* CONFIG_BLK_INLINE_ENCRYPTION */
-static inline void dm_calculate_supported_crypto_modes(struct dm_table *t,
-						       struct request_queue *q)
-{
-}
-#endif /* !CONFIG_BLK_INLINE_ENCRYPTION */
-
 static int device_flush_capable(struct dm_target *ti, struct dm_dev *dev,
 				sector_t start, sector_t len, void *data)
 {
@@ -1891,8 +1846,6 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 
 	dm_table_verify_integrity(t);
 
-	dm_calculate_supported_crypto_modes(t, q);
-
 	/*
 	 * Some devices don't use blk_integrity but still want stable pages
 	 * because they do their own checksumming.
@@ -1927,9 +1880,6 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 	smp_mb();
 	if (dm_table_request_based(t))
 		queue_flag_set_unlocked(QUEUE_FLAG_STACKABLE, q);
-
-	/* io_pages is used for readahead */
-	q->backing_dev_info->io_pages = limits->max_sectors >> (PAGE_SHIFT - 9);
 }
 
 unsigned int dm_table_get_num_targets(struct dm_table *t)
