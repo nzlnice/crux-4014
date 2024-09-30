@@ -146,8 +146,6 @@
 #include <linux/crash_dump.h>
 #include <linux/sctp.h>
 #include <net/udp_tunnel.h>
-#include <linux/tcp.h>
-#include <net/tcp.h>
 
 #include "net-sysfs.h"
 
@@ -2167,6 +2165,8 @@ int netif_set_xps_queue(struct net_device *dev, const struct cpumask *mask,
 	struct xps_map *map, *new_map;
 	bool active = false;
 
+	WARN_ON_ONCE(index >= dev->num_tx_queues);
+
 	if (dev->num_tc) {
 		num_tc = dev->num_tc;
 		tc = netdev_txq_to_tc(dev, index);
@@ -3072,10 +3072,6 @@ static struct sk_buff *validate_xmit_skb(struct sk_buff *skb, struct net_device 
 	if (netif_needs_gso(skb, features)) {
 		struct sk_buff *segs;
 
-		__be16 src_port = tcp_hdr(skb)->source;
-		__be16 dest_port = tcp_hdr(skb)->dest;
-
-		trace_print_skb_gso(skb, src_port, dest_port);
 		segs = skb_gso_segment(skb, features);
 		if (IS_ERR(segs)) {
 			goto out_kfree_skb;
@@ -3700,8 +3696,10 @@ static int get_rps_cpu(struct net_device *dev, struct sk_buff *skb,
 		u32 next_cpu;
 		u32 ident;
 
-		/* First check into global flow table if there is a match */
-		ident = sock_flow_table->ents[hash & sock_flow_table->mask];
+		/* First check into global flow table if there is a match.
+		 * This READ_ONCE() pairs with WRITE_ONCE() from rps_record_sock_flow().
+		 */
+		ident = READ_ONCE(sock_flow_table->ents[hash & sock_flow_table->mask]);
 		if ((ident ^ hash) & ~rps_cpu_mask)
 			goto try_rps;
 
@@ -4348,16 +4346,6 @@ static inline int nf_ingress(struct sk_buff *skb, struct packet_type **pt_prev,
 	return 0;
 }
 
-int (*gsb_nw_stack_recv)(struct sk_buff *skb) __rcu __read_mostly;
-EXPORT_SYMBOL(gsb_nw_stack_recv);
-
-int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
-EXPORT_SYMBOL(embms_tm_multicast_recv);
-
-int (*athrs_fast_nat_recv)(struct sk_buff *skb,
-			   struct packet_type *pt_temp) __rcu __read_mostly;
-EXPORT_SYMBOL(athrs_fast_nat_recv);
-
 static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 {
 	struct packet_type *ptype, *pt_prev;
@@ -4366,9 +4354,6 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 	bool deliver_exact = false;
 	int ret = NET_RX_DROP;
 	__be16 type;
-	int (*gsb_ns_recv)(struct sk_buff *skb);
-	int (*embms_recv)(struct sk_buff *skb);
-	int (*fast_recv)(struct sk_buff *skb, struct packet_type *pt_temp);
 
 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
 
@@ -4425,27 +4410,7 @@ skip_taps:
 	}
 #endif
 	skb_reset_tc(skb);
-	embms_recv = rcu_dereference(embms_tm_multicast_recv);
-	if (embms_recv)
-		embms_recv(skb);
-
 skip_classify:
-	gsb_ns_recv = rcu_dereference(gsb_nw_stack_recv);
-	if (gsb_ns_recv) {
-		if (gsb_ns_recv(skb)) {
-			ret = NET_RX_SUCCESS;
-			goto out;
-		}
-	}
-
-	fast_recv = rcu_dereference(athrs_fast_nat_recv);
-	if (fast_recv) {
-		if (fast_recv(skb, pt_prev)) {
-			ret = NET_RX_SUCCESS;
-			goto out;
-		}
-	}
-
 	if (pfmemalloc && !skb_pfmemalloc_protocol(skb))
 		goto drop;
 
@@ -4527,7 +4492,6 @@ drop:
 	}
 
 out:
-	trace_net_receive_skb_exit(skb);
 	return ret;
 }
 
@@ -4732,7 +4696,6 @@ static int napi_gro_complete(struct sk_buff *skb)
 	}
 
 out:
-	__this_cpu_add(softnet_data.gro_coalesced, NAPI_GRO_CB(skb)->count > 1);
 	return netif_receive_skb_internal(skb);
 }
 
@@ -4775,7 +4738,6 @@ static void gro_list_prepare(struct napi_struct *napi, struct sk_buff *skb)
 		unsigned long diffs;
 
 		NAPI_GRO_CB(p)->flush = 0;
-		NAPI_GRO_CB(p)->flush_id = 0;
 
 		if (hash != skb_get_hash_raw(p)) {
 			NAPI_GRO_CB(p)->same_flow = 0;
@@ -4865,6 +4827,7 @@ static enum gro_result dev_gro_receive(struct napi_struct *napi, struct sk_buff 
 		NAPI_GRO_CB(skb)->encap_mark = 0;
 		NAPI_GRO_CB(skb)->recursion_counter = 0;
 		NAPI_GRO_CB(skb)->is_fou = 0;
+		NAPI_GRO_CB(skb)->is_atomic = 1;
 		NAPI_GRO_CB(skb)->gro_remcsum_start = 0;
 
 		/* Setup for GRO checksum validation */
@@ -5178,14 +5141,8 @@ static void net_rps_send_ipi(struct softnet_data *remsd)
 	while (remsd) {
 		struct softnet_data *next = remsd->rps_ipi_next;
 
-		if (cpu_online(remsd->cpu)) {
+		if (cpu_online(remsd->cpu))
 			smp_call_function_single_async(remsd->cpu, &remsd->csd);
-		} else {
-			pr_err("%s() cpu offline\n", __func__);
-			rps_lock(remsd);
-			remsd->backlog.state = 0;
-			rps_unlock(remsd);
-		}
 		remsd = next;
 	}
 #endif
@@ -5245,7 +5202,8 @@ static int process_backlog(struct napi_struct *napi, int quota)
 			rcu_read_unlock();
 			input_queue_head_incr(sd);
 			if (++work >= quota)
-				goto state_changed;
+				return work;
+
 		}
 
 		local_irq_disable();
@@ -5268,10 +5226,6 @@ static int process_backlog(struct napi_struct *napi, int quota)
 		rps_unlock(sd);
 		local_irq_enable();
 	}
-
-state_changed:
-	napi_gro_flush(napi, false);
-	sd->current_napi = NULL;
 
 	return work;
 }
@@ -5375,12 +5329,9 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
 				      HRTIMER_MODE_REL_PINNED);
 	}
 	if (unlikely(!list_empty(&n->poll_list))) {
-		struct softnet_data *sd = this_cpu_ptr(&softnet_data);
-
 		/* If n->poll_list is not empty, we need to mask irqs */
 		local_irq_save(flags);
 		list_del_init(&n->poll_list);
-		sd->current_napi = NULL;
 		local_irq_restore(flags);
 	}
 
@@ -5637,14 +5588,6 @@ void netif_napi_del(struct napi_struct *napi)
 }
 EXPORT_SYMBOL(netif_napi_del);
 
-struct napi_struct *get_current_napi_context(void)
-{
-	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
-
-	return sd->current_napi;
-}
-EXPORT_SYMBOL(get_current_napi_context);
-
 static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 {
 	void *have;
@@ -5664,9 +5607,6 @@ static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 	 */
 	work = 0;
 	if (test_bit(NAPI_STATE_SCHED, &n->state)) {
-		struct softnet_data *sd = this_cpu_ptr(&softnet_data);
-
-		sd->current_napi = n;
 		work = n->poll(n, weight);
 		trace_napi_poll(n, work, weight);
 	}
@@ -7415,18 +7355,6 @@ static netdev_features_t netdev_fix_features(struct net_device *dev,
 		features &= ~dev->gso_partial_features;
 	}
 
-	if (!(features & NETIF_F_RXCSUM)) {
-		/* NETIF_F_GRO_HW implies doing RXCSUM since every packet
-		 * successfully merged by hardware must also have the
-		 * checksum verified by hardware.  If the user does not
-		 * want to enable RXCSUM, logically, we should disable GRO_HW.
-		 */
-		if (features & NETIF_F_GRO_HW) {
-			netdev_dbg(dev, "Dropping NETIF_F_GRO_HW since no RXCSUM feature.\n");
-			features &= ~NETIF_F_GRO_HW;
-		}
-	}
-
 	return features;
 }
 
@@ -7962,7 +7890,6 @@ static void netdev_wait_allrefs(struct net_device *dev)
 			pr_emerg("unregister_netdevice: waiting for %s to become free. Usage count = %d\n",
 				 dev->name, refcnt);
 			warning_time = jiffies;
-			break;
 		}
 	}
 }
@@ -8026,12 +7953,11 @@ void netdev_run_todo(void)
 		netdev_wait_allrefs(dev);
 
 		/* paranoia */
-		WARN_ON(netdev_refcnt_read(dev));
-		WARN_ON(!list_empty(&dev->ptype_all));
-		WARN_ON(!list_empty(&dev->ptype_specific));
+		BUG_ON(netdev_refcnt_read(dev));
+		BUG_ON(!list_empty(&dev->ptype_all));
+		BUG_ON(!list_empty(&dev->ptype_specific));
 		WARN_ON(rcu_access_pointer(dev->ip_ptr));
 		WARN_ON(rcu_access_pointer(dev->ip6_ptr));
-		WARN_ON(dev->dn_ptr);
 
 		if (dev->priv_destructor)
 			dev->priv_destructor(dev);

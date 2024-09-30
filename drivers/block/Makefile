@@ -27,8 +27,6 @@ obj-$(CONFIG_BLK_DEV_NBD)	+= nbd.o
 obj-$(CONFIG_BLK_DEV_CRYPTOLOOP) += cryptoloop.o
 obj-$(CONFIG_VIRTIO_BLK)	+= virtio_blk.o
 
-obj-$(CONFIG_BLK_DEV_SX8)	+= sx8.o
-
 obj-$(CONFIG_XEN_BLKDEV_FRONTEND)	+= xen-blkfront.o
 obj-$(CONFIG_XEN_BLKDEV_BACKEND)	+= xen-blkback/
 obj-$(CONFIG_BLK_DEV_DRBD)     += drbd/
@@ -41,8 +39,3 @@ obj-$(CONFIG_ZRAM) += zram/
 
 skd-y		:= skd_main.o
 swim_mod-y	:= swim.o swim_asm.o
-
-obj-$(CONFIG_VSERVICES_BLOCK_SERVER)     += vs_block_server.o
-CFLAGS_vs_block_server.o += -Werror
-obj-$(CONFIG_VSERVICES_BLOCK_CLIENT)     += vs_block_client.o
-CFLAGS_vs_block_client.o += -Werror

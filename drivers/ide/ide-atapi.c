@@ -211,7 +211,7 @@ void ide_prep_sense(ide_drive_t *drive, struct request *rq)
 	}
 
 	sense_rq->rq_disk = rq->rq_disk;
-	sense_rq->cmd_flags = REQ_OP_DRV_IN | REQ_PREEMPT;
+	sense_rq->cmd_flags = REQ_OP_DRV_IN;
 	ide_req(sense_rq)->type = ATA_PRIV_SENSE;
 
 	req->cmd[0] = GPCMD_REQUEST_SENSE;
@@ -591,7 +591,7 @@ static int ide_delayed_transfer_pc(ide_drive_t *drive)
 
 static ide_startstop_t ide_transfer_pc(ide_drive_t *drive)
 {
-	struct ide_atapi_pc *uninitialized_var(pc);
+	struct ide_atapi_pc *pc;
 	ide_hwif_t *hwif = drive->hwif;
 	struct request *rq = hwif->rq;
 	ide_expiry_t *expiry;

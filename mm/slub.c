@@ -722,21 +722,11 @@ static void print_trailer(struct kmem_cache *s, struct page *page, u8 *p)
 	dump_stack();
 }
 
-#ifdef CONFIG_SLUB_DEBUG_PANIC_ON
-static void slab_panic(const char *cause)
-{
-	panic("%s\n", cause);
-}
-#else
-static inline void slab_panic(const char *cause) {}
-#endif
-
 void object_err(struct kmem_cache *s, struct page *page,
 			u8 *object, char *reason)
 {
 	slab_bug(s, "%s", reason);
 	print_trailer(s, page, object);
-	slab_panic(reason);
 }
 
 static __printf(3, 4) void slab_err(struct kmem_cache *s, struct page *page,
@@ -751,7 +741,6 @@ static __printf(3, 4) void slab_err(struct kmem_cache *s, struct page *page,
 	slab_bug(s, "%s", buf);
 	print_page_info(page);
 	dump_stack();
-	slab_panic("slab error");
 }
 
 static void init_object(struct kmem_cache *s, void *object, u8 val)
@@ -773,7 +762,6 @@ static void init_object(struct kmem_cache *s, void *object, u8 val)
 static void restore_bytes(struct kmem_cache *s, char *message, u8 data,
 						void *from, void *to)
 {
-	slab_panic("object poison overwritten");
 	slab_fix(s, "Restoring 0x%p-0x%p=0x%x\n", from, to - 1, data);
 	memset(from, data, to - from);
 }
@@ -1219,7 +1207,7 @@ static noinline int free_debug_processing(
 	struct kmem_cache_node *n = get_node(s, page_to_nid(page));
 	void *object = head;
 	int cnt = 0;
-	unsigned long uninitialized_var(flags);
+	unsigned long flags;
 	int ret = 0;
 
 	spin_lock_irqsave(&n->list_lock, flags);
@@ -1544,25 +1532,6 @@ static int init_cache_random_seq(struct kmem_cache *s)
 	return 0;
 }
 
-/* re-initialize the random sequence cache */
-static int reinit_cache_random_seq(struct kmem_cache *s)
-{
-	int err;
-
-	if (s->random_seq) {
-		cache_random_seq_destroy(s);
-		err = init_cache_random_seq(s);
-
-		if (err) {
-			pr_err("SLUB: Unable to re-initialize random sequence cache for %s\n",
-				s->name);
-			return err;
-		}
-	}
-
-	return 0;
-}
-
 /* Initialize each random sequence freelist per cache */
 static void __init init_freelist_randomization(void)
 {
@@ -1634,10 +1603,6 @@ static bool shuffle_freelist(struct kmem_cache *s, struct page *page)
 }
 #else
 static inline int init_cache_random_seq(struct kmem_cache *s)
-{
-	return 0;
-}
-static inline int reinit_cache_random_seq(struct kmem_cache *s)
 {
 	return 0;
 }
@@ -1774,7 +1739,6 @@ static void __free_slab(struct kmem_cache *s, struct page *page)
 	if (current->reclaim_state)
 		current->reclaim_state->reclaimed_slab += pages;
 	memcg_uncharge_slab(page, order, s);
-	kasan_alloc_pages(page, order);
 	__free_pages(page, order);
 }
 
@@ -2926,7 +2890,7 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 	struct page new;
 	unsigned long counters;
 	struct kmem_cache_node *n = NULL;
-	unsigned long uninitialized_var(flags);
+	unsigned long flags;
 
 	stat(s, FREE_SLOWPATH);
 
@@ -4041,7 +4005,6 @@ void kfree(const void *x)
 	if (unlikely(!PageSlab(page))) {
 		BUG_ON(!PageCompound(page));
 		kfree_hook(object);
-		kasan_alloc_pages(page, compound_order(page));
 		__free_pages(page, compound_order(page));
 		return;
 	}
@@ -5068,7 +5031,6 @@ static ssize_t order_store(struct kmem_cache *s,
 		return -EINVAL;
 
 	calculate_sizes(s, order);
-	reinit_cache_random_seq(s);
 	return length;
 }
 
@@ -5306,7 +5268,6 @@ static ssize_t red_zone_store(struct kmem_cache *s,
 		s->flags |= SLAB_RED_ZONE;
 	}
 	calculate_sizes(s, -1);
-	reinit_cache_random_seq(s);
 	return length;
 }
 SLAB_ATTR(red_zone);
@@ -5327,7 +5288,6 @@ static ssize_t poison_store(struct kmem_cache *s,
 		s->flags |= SLAB_POISON;
 	}
 	calculate_sizes(s, -1);
-	reinit_cache_random_seq(s);
 	return length;
 }
 SLAB_ATTR(poison);
@@ -5349,7 +5309,6 @@ static ssize_t store_user_store(struct kmem_cache *s,
 		s->flags |= SLAB_STORE_USER;
 	}
 	calculate_sizes(s, -1);
-	reinit_cache_random_seq(s);
 	return length;
 }
 SLAB_ATTR(store_user);

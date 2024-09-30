@@ -150,9 +150,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo);
 						 * most likely due to retrans in 3WHS.
 						 */
 
-/* Number of full MSS to receive before Acking RFC2581 */
-#define TCP_DELACK_SEG          1
-
 #define TCP_RESOURCE_PROBE_INTERVAL ((unsigned)(HZ/2U)) /* Maximal interval between probes
 					                 * for local resources.
 					                 */
@@ -282,11 +279,6 @@ extern int sysctl_tcp_pacing_ss_ratio;
 extern int sysctl_tcp_pacing_ca_ratio;
 
 extern atomic_long_t tcp_memory_allocated;
-
-/* sysctl variables for controlling various tcp parameters */
-extern int sysctl_tcp_delack_seg;
-extern int sysctl_tcp_use_userconfig;
-
 extern struct percpu_counter tcp_sockets_allocated;
 extern unsigned long tcp_memory_pressure;
 
@@ -381,14 +373,6 @@ void tcp_twsk_destructor(struct sock *sk);
 ssize_t tcp_splice_read(struct socket *sk, loff_t *ppos,
 			struct pipe_inode_info *pipe, size_t len,
 			unsigned int flags);
-
-/* sysctl master controller */
-extern int tcp_use_userconfig_sysctl_handler(struct ctl_table *table,
-				int write, void __user *buffer, size_t *length,
-				loff_t *ppos);
-extern int tcp_proc_delayed_ack_control(struct ctl_table *table, int write,
-				void __user *buffer, size_t *length,
-				loff_t *ppos);
 
 void tcp_enter_quickack_mode(struct sock *sk, unsigned int max_quickacks);
 static inline void tcp_dec_quickack_mode(struct sock *sk,
@@ -1904,7 +1888,11 @@ void __tcp_v4_send_check(struct sk_buff *skb, __be32 saddr, __be32 daddr);
 static inline u32 tcp_notsent_lowat(const struct tcp_sock *tp)
 {
 	struct net *net = sock_net((struct sock *)tp);
-	return tp->notsent_lowat ?: READ_ONCE(net->ipv4.sysctl_tcp_notsent_lowat);
+	u32 val;
+
+	val = READ_ONCE(tp->notsent_lowat);
+
+	return val ?: READ_ONCE(net->ipv4.sysctl_tcp_notsent_lowat);
 }
 
 static inline bool tcp_stream_memory_free(const struct sock *sk)

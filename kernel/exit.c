@@ -139,7 +139,7 @@ static void __exit_signal(struct task_struct *tsk)
 	struct signal_struct *sig = tsk->signal;
 	bool group_dead = thread_group_leader(tsk);
 	struct sighand_struct *sighand;
-	struct tty_struct *uninitialized_var(tty);
+	struct tty_struct *tty;
 	u64 utime, stime;
 
 	sighand = rcu_dereference_check(tsk->sighand,
@@ -543,7 +543,6 @@ static void exit_mm(void)
 {
 	struct mm_struct *mm = current->mm;
 	struct core_state *core_state;
-	int mm_released;
 
 	exit_mm_release(current, mm);
 	if (!mm)
@@ -593,12 +592,9 @@ static void exit_mm(void)
 	enter_lazy_tlb(mm, current);
 	task_unlock(current);
 	mm_update_next_owner(mm);
-
-	mm_released = mmput(mm);
+	mmput(mm);
 	if (test_thread_flag(TIF_MEMDIE))
 		exit_oom_victim();
-	if (mm_released)
-		set_tsk_thread_flag(current, TIF_MM_RELEASED);
 }
 
 static struct task_struct *find_alive_thread(struct task_struct *p)
@@ -802,7 +798,6 @@ static void check_stack_usage(void)
 	static DEFINE_SPINLOCK(low_water_lock);
 	static int lowest_to_date = THREAD_SIZE;
 	unsigned long free;
-	int islower = false;
 
 	free = stack_not_used(current);
 
@@ -811,15 +806,11 @@ static void check_stack_usage(void)
 
 	spin_lock(&low_water_lock);
 	if (free < lowest_to_date) {
+		pr_info("%s (%d) used greatest stack depth: %lu bytes left\n",
+			current->comm, task_pid_nr(current), free);
 		lowest_to_date = free;
-		islower = true;
 	}
 	spin_unlock(&low_water_lock);
-
-	if (islower) {
-		pr_info("%s (%d) used greatest stack depth: %lu bytes left\n",
-				current->comm, task_pid_nr(current), free);
-	}
 }
 #else
 static inline void check_stack_usage(void) {}
@@ -872,18 +863,13 @@ void __noreturn do_exit(long code)
 	 * leave this task alone and wait for reboot.
 	 */
 	if (unlikely(tsk->flags & PF_EXITING)) {
-#ifdef CONFIG_PANIC_ON_RECURSIVE_FAULT
-		panic("Recursive fault!\n");
-#else
 		pr_alert("Fixing recursive fault but reboot is needed!\n");
-#endif
 		futex_exit_recursive(tsk);
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule();
 	}
 
 	exit_signals(tsk);  /* sets PF_EXITING */
-	sched_exit(tsk);
 
 	/* sync mm's RSS info before statistics gathering */
 	if (tsk->mm)

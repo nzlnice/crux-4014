@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2014 Samsung Electronics Co., Ltd
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -163,32 +162,6 @@ void drm_bridge_detach(struct drm_bridge *bridge)
 }
 
 /**
- * drm_bridge_connector_init - call bridge's connector_init callback to allow
- *                     the bridge to update connector's behavior.
- * @bridge: bridge control structure
- * @connector: connector control structure
- *
- * Calls ->connector_init() &drm_bridge_funcs op for the bridge.
- *
- * RETURNS:
- * Zero on success, error code on failure
- */
-int drm_bridge_connector_init(struct drm_bridge *bridge,
-	struct drm_connector *connector)
-{
-	int ret = 0;
-
-	if (!bridge || !connector)
-		return -EINVAL;
-
-	if (bridge->funcs->connector_init)
-		ret = bridge->funcs->connector_init(bridge, connector);
-
-	return ret;
-}
-EXPORT_SYMBOL(drm_bridge_connector_init);
-
-/**
  * DOC: bridge callbacks
  *
  * The &drm_bridge_funcs ops are populated by the bridge driver. The DRM
@@ -302,14 +275,8 @@ void drm_bridge_post_disable(struct drm_bridge *bridge)
 	if (!bridge)
 		return;
 
-	if (bridge->is_dsi_drm_bridge)
-		mutex_lock(&bridge->lock);
-
 	if (bridge->funcs->post_disable)
 		bridge->funcs->post_disable(bridge);
-
-	if (bridge->is_dsi_drm_bridge)
-		mutex_unlock(&bridge->lock);
 
 	drm_bridge_post_disable(bridge->next);
 }
@@ -359,49 +326,10 @@ void drm_bridge_pre_enable(struct drm_bridge *bridge)
 
 	drm_bridge_pre_enable(bridge->next);
 
-	if (bridge->is_dsi_drm_bridge)
-		mutex_lock(&bridge->lock);
-
 	if (bridge->funcs->pre_enable)
 		bridge->funcs->pre_enable(bridge);
-
-	if (bridge->is_dsi_drm_bridge)
-		mutex_unlock(&bridge->lock);
 }
 EXPORT_SYMBOL(drm_bridge_pre_enable);
-
-ssize_t drm_bridge_disp_param_get(struct drm_bridge *bridge, char *buf)
-{
-	ssize_t ret = 0;
-	if (!bridge)
-		return 0;
-	ret = drm_bridge_disp_param_get(bridge->next, buf);
-	if (bridge->funcs->disp_param_get)
-		ret = bridge->funcs->disp_param_get(bridge, buf);
-	return ret;
-}
-void drm_bridge_disp_param_set(struct drm_bridge *bridge, int cmd)
-{
-	if (!bridge)
-		return;
-	drm_bridge_disp_param_set(bridge->next, cmd);
-	if (bridge->funcs->disp_param_set)
-		bridge->funcs->disp_param_set(bridge, cmd);
-}
-
-int drm_get_panel_info(struct drm_bridge *bridge, char *buf)
-{
-	int rc = 0;
-	if (!bridge)
-		return rc;
-
-	if (bridge->funcs->disp_get_panel_info)
-		return bridge->funcs->disp_get_panel_info(bridge, buf);
-
-	return rc;
-}
-EXPORT_SYMBOL(drm_get_panel_info);
-
 
 /**
  * drm_bridge_enable - enables all bridges in the encoder chain

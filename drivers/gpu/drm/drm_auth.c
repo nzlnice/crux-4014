@@ -2,7 +2,6 @@
  * Created: Tue Feb  2 08:37:54 1999 by faith@valinux.com
  *
  * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright (C) 2021 XiaoMi, Inc.
  * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
  * All Rights Reserved.
  *
@@ -32,7 +31,6 @@
 #include <drm/drmP.h>
 #include "drm_internal.h"
 #include "drm_legacy.h"
-#include <drm/drm_lease.h>
 
 /**
  * DOC: master and authentication
@@ -95,7 +93,7 @@ int drm_authmagic(struct drm_device *dev, void *data,
 	return file ? 0 : -EINVAL;
 }
 
-struct drm_master *drm_master_create(struct drm_device *dev)
+static struct drm_master *drm_master_create(struct drm_device *dev)
 {
 	struct drm_master *master;
 
@@ -108,14 +106,6 @@ struct drm_master *drm_master_create(struct drm_device *dev)
 	init_waitqueue_head(&master->lock.lock_queue);
 	idr_init(&master->magic_map);
 	master->dev = dev;
-
-	/* initialize the tree of output resource lessees */
-	master->lessor = NULL;
-	master->lessee_id = 0;
-	INIT_LIST_HEAD(&master->lessees);
-	INIT_LIST_HEAD(&master->lessee_list);
-	idr_init(&master->leases);
-	idr_init(&master->lessee_idr);
 
 	return master;
 }
@@ -166,8 +156,6 @@ static int drm_new_set_master(struct drm_device *dev, struct drm_file *fpriv)
 	if (old_master)
 		drm_master_put(&old_master);
 
-	pr_info("%s: pid=%d, task_name=%s\n", __func__, task_pid_nr(current), current->comm);
-
 	return 0;
 
 out_err:
@@ -203,12 +191,6 @@ int drm_setmaster_ioctl(struct drm_device *dev, void *data,
 		goto out_unlock;
 	}
 
-	if (file_priv->master->lessor != NULL) {
-		DRM_DEBUG_LEASE("Attempt to set lessee %d as master\n", file_priv->master->lessee_id);
-		ret = -EINVAL;
-		goto out_unlock;
-	}
-
 	ret = drm_set_master(dev, file_priv, false);
 out_unlock:
 	mutex_unlock(&dev->master_mutex);
@@ -234,12 +216,6 @@ int drm_dropmaster_ioctl(struct drm_device *dev, void *data,
 
 	if (!dev->master)
 		goto out_unlock;
-
-	if (file_priv->master->lessor != NULL) {
-		DRM_DEBUG_LEASE("Attempt to drop lessee %d as master\n", file_priv->master->lessee_id);
-		ret = -EINVAL;
-		goto out_unlock;
-	}
 
 	ret = 0;
 	drm_drop_master(dev, file_priv);
@@ -297,13 +273,6 @@ void drm_master_release(struct drm_file *file_priv)
 	if (dev->master == file_priv->master)
 		drm_drop_master(dev, file_priv);
 out:
-	if (drm_core_check_feature(dev, DRIVER_MODESET) && file_priv->is_master) {
-		/* Revoke any leases held by this or lessees, but only if
-		 * this is the "real" master
-		 */
-		drm_lease_revoke(master);
-	}
-
 	/* drop the master reference held by the file priv */
 	if (file_priv->master)
 		drm_master_put(&file_priv->master);
@@ -322,7 +291,7 @@ out:
  */
 bool drm_is_current_master(struct drm_file *fpriv)
 {
-	return fpriv->is_master && drm_lease_owner(fpriv->master) == fpriv->minor->dev->master;
+	return fpriv->is_master && fpriv->master == fpriv->minor->dev->master;
 }
 EXPORT_SYMBOL(drm_is_current_master);
 
@@ -344,18 +313,12 @@ static void drm_master_destroy(struct kref *kref)
 	struct drm_master *master = container_of(kref, struct drm_master, refcount);
 	struct drm_device *dev = master->dev;
 
-	if (drm_core_check_feature(dev, DRIVER_MODESET))
-		drm_lease_destroy(master);
-
 	if (dev->driver->master_destroy)
 		dev->driver->master_destroy(dev, master);
 
 	drm_legacy_master_rmmaps(dev, master);
 
 	idr_destroy(&master->magic_map);
-	idr_destroy(&master->leases);
-	idr_destroy(&master->lessee_idr);
-
 	kfree(master->unique);
 	kfree(master);
 }
@@ -372,23 +335,3 @@ void drm_master_put(struct drm_master **master)
 	*master = NULL;
 }
 EXPORT_SYMBOL(drm_master_put);
-
-/* Used by drm_client and drm_fb_helper */
-bool drm_master_internal_acquire(struct drm_device *dev)
-{
-	mutex_lock(&dev->master_mutex);
-	if (dev->master) {
-		mutex_unlock(&dev->master_mutex);
-		return false;
-	}
-
-	return true;
-}
-EXPORT_SYMBOL(drm_master_internal_acquire);
-
-/* Used by drm_client and drm_fb_helper */
-void drm_master_internal_release(struct drm_device *dev)
-{
-	mutex_unlock(&dev->master_mutex);
-}
-EXPORT_SYMBOL(drm_master_internal_release);

@@ -938,11 +938,12 @@ static int qdisc_graft(struct net_device *dev, struct Qdisc *parent,
 
 skip:
 		if (!ingress) {
-			notify_and_destroy(net, skb, n, classid,
-					   dev->qdisc, new);
+			old = dev->qdisc;
 			if (new && !new->ops->attach)
 				qdisc_refcount_inc(new);
 			dev->qdisc = new ? : &noop_qdisc;
+
+			notify_and_destroy(net, skb, n, classid, old, new);
 
 			if (new && new->ops->attach)
 				new->ops->attach(new);
@@ -1297,40 +1298,6 @@ static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n,
 	}
 	return 0;
 }
-
-/*
- * enable/disable flow on qdisc.
- */
-int
-tc_qdisc_flow_control(struct net_device *dev, u32 tcm_handle, int enable_flow)
-{
-	struct Qdisc *q;
-	int qdisc_len = 0;
-	struct __qdisc_change_req {
-		struct nlattr attr;
-		struct tc_prio_qopt data;
-	} req =	{
-		.attr = {sizeof(struct __qdisc_change_req), TCA_OPTIONS},
-		.data = {3, {1, 2, 2, 2, 1, 2, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1}, 1}
-		};
-
-	/* override flow bit */
-	req.data.enable_flow = enable_flow;
-
-	/* look up using tcm handle */
-	q = qdisc_lookup(dev, tcm_handle);
-
-	/* call registered change function */
-	if (likely(q && q->ops)) {
-		if (likely(q->ops->change)) {
-			qdisc_len = q->q.qlen;
-			if (q->ops->change(q, &req.attr))
-				pr_err("%s(): qdisc change failed", __func__);
-		}
-	}
-	return qdisc_len;
-}
-EXPORT_SYMBOL(tc_qdisc_flow_control);
 
 /*
  * Create/change qdisc.

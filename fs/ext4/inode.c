@@ -666,16 +666,6 @@ found:
 			 */
 			ext4_clear_inode_state(inode, EXT4_STATE_EXT_MIGRATE);
 		}
-
-		/*
-		 * Update reserved blocks/metadata blocks after successful
-		 * block allocation which had been deferred till now. We don't
-		 * support fallocate for non extent files. So we can update
-		 * reserve space here.
-		 */
-		if ((retval > 0) &&
-			(flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE))
-			ext4_da_update_reserve_space(inode, retval, 1);
 	}
 
 	if (retval > 0) {
@@ -3622,7 +3612,7 @@ static int ext4_iomap_end(struct inode *inode, loff_t offset, loff_t length,
 	/*
 	 * We may need to truncate allocated but not written blocks beyond EOF.
 	 */
-	if (iomap->offset + iomap->length >
+	if (iomap->offset + iomap->length > 
 	    ALIGN(inode->i_size, 1 << blkbits)) {
 		ext4_lblk_t written_blk, end_blk;
 
@@ -4295,7 +4285,6 @@ int ext4_update_disksize_before_punch(struct inode *inode, loff_t offset,
 
 int ext4_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 {
-#if 0
 	struct super_block *sb = inode->i_sb;
 	ext4_lblk_t first_block, stop_block;
 	struct address_space *mapping = inode->i_mapping;
@@ -4444,12 +4433,6 @@ out_dio:
 out_mutex:
 	inode_unlock(inode);
 	return ret;
-#else
-	/*
-	 * Disabled as per b/28760453
-	 */
-	return -EOPNOTSUPP;
-#endif
 }
 
 int ext4_inode_attach_jinode(struct inode *inode)

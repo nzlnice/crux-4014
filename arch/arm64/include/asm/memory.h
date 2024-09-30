@@ -76,16 +76,11 @@
 /*
  * Generic and tag-based KASAN require 1/8th and 1/16th of the kernel virtual
  * address space for the shadow region respectively. They can bloat the stack
- * significantly, so double the (minimum) stack size when they are in use,
- * and then double it again if KASAN_EXTRA is on
+ * significantly, so double the (minimum) stack size when they are in use.
  */
 #ifdef CONFIG_KASAN
 #define KASAN_SHADOW_SIZE	(UL(1) << (VA_BITS - KASAN_SHADOW_SCALE_SHIFT))
-#ifdef CONFIG_KASAN_EXTRA
-#define KASAN_THREAD_SHIFT	2
-#else
 #define KASAN_THREAD_SHIFT	1
-#endif /* CONFIG_KASAN_EXTRA */
 #else
 #define KASAN_SHADOW_SIZE	(0)
 #define KASAN_THREAD_SHIFT	0
@@ -187,9 +182,6 @@ extern u64			kimage_vaddr;
 
 /* the offset between the kernel virtual and physical mappings */
 extern u64			kimage_voffset;
-
-/* physical memory limit imposed by the booloader */
-extern phys_addr_t bootloader_memory_limit;
 
 static inline unsigned long kaslr_offset(void)
 {

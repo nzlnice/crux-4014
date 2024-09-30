@@ -1264,33 +1264,6 @@ static inline void *saveable_highmem_page(struct zone *z, unsigned long p)
 }
 #endif /* CONFIG_HIGHMEM */
 
-static bool kernel_pte_present(struct page *page)
-{
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
-	unsigned long addr = (unsigned long)page_address(page);
-
-	pgd = pgd_offset_k(addr);
-	if (pgd_none(*pgd))
-		return false;
-
-	pud = pud_offset(pgd, addr);
-	if (pud_none(*pud))
-		return false;
-	if (pud_sect(*pud))
-		return true;
-
-	pmd = pmd_offset(pud, addr);
-	if (pmd_none(*pmd))
-		return false;
-	if (pmd_sect(*pmd))
-		return true;
-
-	pte = pte_offset_kernel(pmd, addr);
-	return pte_valid(*pte);
-}
 /**
  * saveable_page - Check if the given page is saveable.
  *
@@ -1319,14 +1292,6 @@ static struct page *saveable_page(struct zone *zone, unsigned long pfn)
 
 	if (PageReserved(page)
 	    && (!kernel_page_present(page) || pfn_is_nosave(pfn)))
-		return NULL;
-
-	/*
-	 * Even if page is not reserved and if it's not present in kernel PTE;
-	 * don't snapshot it ! This happens to the pages allocated using
-	 * __dma_alloc_coherent with DMA_ATTR_NO_KERNEL_MAPPING flag set.
-	 */
-	if (!kernel_pte_present(page))
 		return NULL;
 
 	if (page_is_guard(page))
@@ -2412,8 +2377,9 @@ static void *get_highmem_page_buffer(struct page *page,
 		pbe->copy_page = tmp;
 	} else {
 		/* Copy of the page will be stored in normal memory */
-		kaddr = safe_pages_list;
-		safe_pages_list = safe_pages_list->next;
+		kaddr = __get_safe_page(ca->gfp_mask);
+		if (!kaddr)
+			return ERR_PTR(-ENOMEM);
 		pbe->copy_page = virt_to_page(kaddr);
 	}
 	pbe->next = highmem_pblist;
@@ -2593,8 +2559,9 @@ static void *get_buffer(struct memory_bitmap *bm, struct chain_allocator *ca)
 		return ERR_PTR(-ENOMEM);
 	}
 	pbe->orig_address = page_address(page);
-	pbe->address = safe_pages_list;
-	safe_pages_list = safe_pages_list->next;
+	pbe->address = __get_safe_page(ca->gfp_mask);
+	if (!pbe->address)
+		return ERR_PTR(-ENOMEM);
 	pbe->next = restore_pblist;
 	restore_pblist = pbe;
 	return pbe->address;
@@ -2624,8 +2591,6 @@ int snapshot_write_next(struct snapshot_handle *handle)
 	/* Check if we have already loaded the entire image */
 	if (handle->cur > 1 && handle->cur > nr_meta_pages + nr_copy_pages)
 		return 0;
-
-	handle->sync_read = 1;
 
 	if (!handle->cur) {
 		if (!buffer)
@@ -2667,7 +2632,6 @@ int snapshot_write_next(struct snapshot_handle *handle)
 			memory_bm_position_reset(&orig_bm);
 			restore_pblist = NULL;
 			handle->buffer = get_buffer(&orig_bm, &ca);
-			handle->sync_read = 0;
 			if (IS_ERR(handle->buffer))
 				return PTR_ERR(handle->buffer);
 		}
@@ -2679,9 +2643,8 @@ int snapshot_write_next(struct snapshot_handle *handle)
 		handle->buffer = get_buffer(&orig_bm, &ca);
 		if (IS_ERR(handle->buffer))
 			return PTR_ERR(handle->buffer);
-		if (handle->buffer != buffer)
-			handle->sync_read = 0;
 	}
+	handle->sync_read = (handle->buffer == buffer);
 	handle->cur++;
 	return PAGE_SIZE;
 }

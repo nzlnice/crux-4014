@@ -673,12 +673,6 @@ struct Scsi_Host {
 	unsigned short_inquiry:1;
 
 	/*
-	 * Set "DBD" field in mode_sense caching mode page in case it is
-	 * mandatory by LLD standard.
-	 */
-	unsigned set_dbd_for_caching:1;
-
-	/*
 	 * Optional work queue to be utilized by the transport
 	 */
 	char work_q_name[20];
@@ -792,7 +786,7 @@ extern void scsi_rescan_device(struct device *);
 extern void scsi_remove_host(struct Scsi_Host *);
 extern struct Scsi_Host *scsi_host_get(struct Scsi_Host *);
 extern void scsi_host_put(struct Scsi_Host *t);
-extern struct Scsi_Host *scsi_host_lookup(unsigned short);
+extern struct Scsi_Host *scsi_host_lookup(unsigned int hostnum);
 extern const char *scsi_host_state_name(enum scsi_host_state);
 extern void scsi_cmd_get_serial(struct Scsi_Host *, struct scsi_cmnd *);
 

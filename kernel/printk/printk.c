@@ -59,10 +59,6 @@
 #include "braille.h"
 #include "internal.h"
 
-#ifdef CONFIG_EARLY_PRINTK_DIRECT
-extern void printascii(char *);
-#endif
-
 int console_printk[4] = {
 	CONSOLE_LOGLEVEL_DEFAULT,	/* console_loglevel */
 	MESSAGE_LOGLEVEL_DEFAULT,	/* default_message_loglevel */
@@ -1881,10 +1877,6 @@ int vprintk_store(int facility, int level,
 		}
 	}
 
-#ifdef CONFIG_EARLY_PRINTK_DIRECT
-	printascii(text);
-#endif
-
 	if (level == LOGLEVEL_DEFAULT)
 		level = default_message_loglevel;
 
@@ -2202,8 +2194,6 @@ void resume_console(void)
 	console_unlock();
 }
 
-#ifdef CONFIG_CONSOLE_FLUSH_ON_HOTPLUG
-
 /**
  * console_cpu_notify - print deferred console messages after CPU hotplug
  * @cpu: unused
@@ -2222,8 +2212,6 @@ static int console_cpu_notify(unsigned int cpu)
 	}
 	return 0;
 }
-
-#endif
 
 /**
  * console_lock - lock the console system for exclusive use.
@@ -2840,7 +2828,7 @@ void __init console_init(void)
 static int __init printk_late_init(void)
 {
 	struct console *con;
-	int ret = 0;
+	int ret;
 
 	for_each_console(con) {
 		if (!(con->flags & CON_BOOT))
@@ -2862,15 +2850,13 @@ static int __init printk_late_init(void)
 			unregister_console(con);
 		}
 	}
-#ifdef CONFIG_CONSOLE_FLUSH_ON_HOTPLUG
 	ret = cpuhp_setup_state_nocalls(CPUHP_PRINTK_DEAD, "printk:dead", NULL,
 					console_cpu_notify);
 	WARN_ON(ret < 0);
 	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "printk:online",
 					console_cpu_notify, NULL);
 	WARN_ON(ret < 0);
-#endif
-	return ret;
+	return 0;
 }
 late_initcall(printk_late_init);
 

@@ -33,7 +33,6 @@
 #include <linux/moduleparam.h>
 
 #include <drm/drmP.h>
-#include <drm/drm_client.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_crtc_helper.h>
@@ -100,7 +99,7 @@ drm_mode_validate_pipeline(struct drm_display_mode *mode,
 
 	/* Step 2: Validate against encoders and crtcs */
 	for (i = 0; i < DRM_CONNECTOR_MAX_ENCODER; i++) {
-		struct drm_encoder *encoder = drm_encoder_find(dev, NULL, ids[i]);
+		struct drm_encoder *encoder = drm_encoder_find(dev, ids[i]);
 		struct drm_crtc *crtc;
 
 		if (!encoder)
@@ -466,8 +465,9 @@ retry:
 		 */
 		dev->mode_config.delayed_event = true;
 		if (dev->mode_config.poll_enabled)
-			schedule_delayed_work(&dev->mode_config.output_poll_work,
-					      0);
+			mod_delayed_work(system_wq,
+					 &dev->mode_config.output_poll_work,
+					 0);
 	}
 
 	/* Re-enable polling in case the global poll config changed. */
@@ -582,8 +582,6 @@ void drm_kms_helper_hotplug_event(struct drm_device *dev)
 	drm_sysfs_hotplug_event(dev);
 	if (dev->mode_config.funcs->output_poll_changed)
 		dev->mode_config.funcs->output_poll_changed(dev);
-
-	drm_client_dev_hotplug(dev);
 }
 EXPORT_SYMBOL(drm_kms_helper_hotplug_event);
 

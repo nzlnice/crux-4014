@@ -662,7 +662,7 @@ static int breakpoint_handler(unsigned long unused, unsigned int esr,
 		perf_bp_event(bp, regs);
 
 		/* Do we need to handle the stepping? */
-		if (is_default_overflow_handler(bp))
+		if (uses_default_overflow_handler(bp))
 			step = 1;
 unlock:
 		rcu_read_unlock();
@@ -741,7 +741,7 @@ static u64 get_distance_from_watchpoint(unsigned long addr, u64 val,
 static int watchpoint_report(struct perf_event *wp, unsigned long addr,
 			     struct pt_regs *regs)
 {
-	int step = is_default_overflow_handler(wp);
+	int step = uses_default_overflow_handler(wp);
 	struct arch_hw_breakpoint *info = counter_arch_bp(wp);
 
 	info->trigger = addr;
@@ -944,31 +944,12 @@ void hw_breakpoint_thread_switch(struct task_struct *next)
 }
 
 /*
- * Check if halted debug mode is enabled.
- */
-static u32 hde_enabled(void)
-{
-	u32 mdscr;
-
-	asm volatile("mrs %0, mdscr_el1" : "=r" (mdscr));
-	return (mdscr & DBG_MDSCR_HDE);
-}
-
-/*
  * CPU initialisation.
  */
 static int hw_breakpoint_reset(unsigned int cpu)
 {
 	int i;
 	struct perf_event **slots;
-
-	/*
-	 * When halting debug mode is enabled, break point could be already
-	 * set be external debugger. Don't reset debug registers here to
-	 * reserve break point from external debugger.
-	 */
-	if (hde_enabled())
-		return 0;
 	/*
 	 * When a CPU goes through cold-boot, it does not have any installed
 	 * slot, so it is safe to share the same function for restoring and

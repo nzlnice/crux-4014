@@ -58,7 +58,14 @@ $(warning Detected assembler with broken .inst; disassembly will be unreliable)
   endif
 endif
 
-KBUILD_CFLAGS	+= -mgeneral-regs-only $(lseinstr) $(brokengasinst)
+ifeq ($(cc-name),clang)
+# This is a workaround for https://bugs.llvm.org/show_bug.cgi?id=30792.
+# TODO: revert when this is fixed in LLVM.
+KBUILD_CFLAGS	+= -mno-implicit-float
+else
+KBUILD_CFLAGS	+= -mgeneral-regs-only
+endif
+KBUILD_CFLAGS	+= $(lseinstr) $(brokengasinst)
 KBUILD_CFLAGS	+= -fno-asynchronous-unwind-tables
 KBUILD_CFLAGS	+= $(call cc-option, -mpc-relative-literal-loads)
 KBUILD_CFLAGS	+= -fno-pic
@@ -69,12 +76,6 @@ KBUILD_AFLAGS	+= $(call cc-option,-mabi=lp64)
 
 ifeq ($(CONFIG_SHADOW_CALL_STACK), y)
 KBUILD_CFLAGS	+= -ffixed-x18
-endif
-
-ifeq ($(cc-name),clang)
-KBUILD_CFLAGS	+= -DCONFIG_ARCH_SUPPORTS_INT128
-else
-KBUILD_CFLAGS	+= $(call cc-ifversion, -ge, 0500, -DCONFIG_ARCH_SUPPORTS_INT128)
 endif
 
 ifeq ($(CONFIG_CPU_BIG_ENDIAN), y)
@@ -159,29 +160,18 @@ core-$(CONFIG_CRYPTO) += arch/arm64/crypto/
 libs-y		:= arch/arm64/lib/ $(libs-y)
 core-$(CONFIG_EFI_STUB) += $(objtree)/drivers/firmware/efi/libstub/lib.a
 
-ifeq ($(CONFIG_BUILD_ARM64_KERNEL_COMPRESSION_GZIP),y)
-KBUILD_IMAGE   := Image.gz
-else
-KBUILD_IMAGE   := Image
-endif
-
 # Default target when executing plain make
 boot		:= arch/arm64/boot
 ifeq ($(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE),y)
-KBUILD_TARGET  := $(addsuffix -dtb,$(KBUILD_IMAGE))
-KBUILD_IMAGE	:= $(boot)/$(addsuffix -dtb,$(KBUILD_IMAGE))
+KBUILD_IMAGE	:= $(boot)/$(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_KERNEL_IMAGE_NAME))
 else
-KBUILD_TARGET := $(KBUILD_IMAGE)
-KBUILD_IMAGE  := $(boot)/$(KBUILD_IMAGE)
+KBUILD_IMAGE	:= $(boot)/Image.gz
 endif
 
 KBUILD_DTBS	:= dtbs
 
-ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
-export DTC_FLAGS := -@
-endif
+all:	Image.gz $(KBUILD_DTBS) $(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_KERNEL_IMAGE_NAME))
 
-all:	$(KBUILD_DTBS) $(KBUILD_TARGET)
 
 Image: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@

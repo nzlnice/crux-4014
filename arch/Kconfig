@@ -237,6 +237,9 @@ config ARCH_HAS_FORTIFY_SOURCE
 config ARCH_HAS_SET_MEMORY
 	bool
 
+config ARCH_HAS_CPU_FINALIZE_INIT
+	bool
+
 # Select if arch init_task initializer is different to init/init_task.c
 config ARCH_INIT_TASK
        bool
@@ -1097,15 +1100,6 @@ config REFCOUNT_FULL
 	  implementation, which can be (slightly) slower but provides protections
 	  against various use-after-free conditions that can be used in
 	  security flaw exploits.
-
-config PANIC_ON_REFCOUNT_ERROR
-	bool "Kernel panic on refcount error detection"
-	depends on REFCOUNT_FULL
-	help
-	  If enabled, the kernel will panic when the refcount library
-	  has detected any type of error (e.g. potential use-after-free
-	  or potential memory-leaks) with an object associated with that
-	  reference counter.
 
 config HAVE_ARCH_COMPILER_H
 	bool

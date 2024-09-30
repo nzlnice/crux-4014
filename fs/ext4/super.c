@@ -69,7 +69,6 @@ static int ext4_mark_recovery_complete(struct super_block *sb,
 static int ext4_clear_journal_err(struct super_block *sb,
 				  struct ext4_super_block *es);
 static int ext4_sync_fs(struct super_block *sb, int wait);
-static void ext4_umount_end(struct super_block *sb, int flags);
 static int ext4_remount(struct super_block *sb, int *flags, char *data);
 static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf);
 static int ext4_unfreeze(struct super_block *sb);
@@ -1384,7 +1383,6 @@ static const struct super_operations ext4_sops = {
 	.freeze_fs	= ext4_freeze,
 	.unfreeze_fs	= ext4_unfreeze,
 	.statfs		= ext4_statfs,
-	.umount_end	= ext4_umount_end,
 	.remount_fs	= ext4_remount,
 	.show_options	= ext4_show_options,
 #ifdef CONFIG_QUOTA
@@ -2443,11 +2441,9 @@ static __le16 ext4_group_desc_csum(struct super_block *sb, __u32 block_group,
 	crc = crc16(crc, (__u8 *)gdp, offset);
 	offset += sizeof(gdp->bg_checksum); /* skip checksum */
 	/* for checksum of struct ext4_group_desc do the rest...*/
-	if (ext4_has_feature_64bit(sb) &&
-	    offset < le16_to_cpu(sbi->s_es->s_desc_size))
+	if (ext4_has_feature_64bit(sb) && offset < sbi->s_desc_size)
 		crc = crc16(crc, (__u8 *)gdp + offset,
-			    le16_to_cpu(sbi->s_es->s_desc_size) -
-				offset);
+			    sbi->s_desc_size - offset);
 
 out:
 	return cpu_to_le16(crc);
@@ -5316,25 +5312,6 @@ struct ext4_mount_options {
 #endif
 };
 
-static void ext4_umount_end(struct super_block *sb, int flags)
-{
-	/*
-	 * this is called at the end of umount(2). If there is an unclosed
-	 * namespace, ext4 won't do put_super() which triggers fsck in the
-	 * next boot.
-	 */
-	if ((flags & MNT_FORCE) || atomic_read(&sb->s_active) > 1) {
-		ext4_msg(sb, KERN_ERR,
-			"errors=remount-ro for active namespaces on umount %x",
-						flags);
-		clear_opt(sb, ERRORS_PANIC);
-		set_opt(sb, ERRORS_RO);
-		/* to write the latest s_kbytes_written */
-		if (!(sb->s_flags & MS_RDONLY))
-			ext4_commit_super(sb, 1);
-	}
-}
-
 static int ext4_remount(struct super_block *sb, int *flags, char *data)
 {
 	struct ext4_super_block *es;
@@ -5568,9 +5545,6 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 		ext4_commit_super(sb, 1);
 
 #ifdef CONFIG_QUOTA
-	/* Release old quota file names */
-	for (i = 0; i < EXT4_MAXQUOTAS; i++)
-		kfree(old_opts.s_qf_names[i]);
 	if (enable_quota) {
 		if (sb_any_quota_suspended(sb))
 			dquot_resume(sb, -1);
@@ -5580,6 +5554,9 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 				goto restore_opts;
 		}
 	}
+	/* Release old quota file names */
+	for (i = 0; i < EXT4_MAXQUOTAS; i++)
+		kfree(old_opts.s_qf_names[i]);
 #endif
 
 	*flags = (*flags & ~MS_LAZYTIME) | (sb->s_flags & MS_LAZYTIME);
@@ -5588,6 +5565,13 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	return 0;
 
 restore_opts:
+	/*
+	 * If there was a failing r/w to ro transition, we may need to
+	 * re-enable quota
+	 */
+	if ((sb->s_flags & SB_RDONLY) && !(old_sb_flags & SB_RDONLY) &&
+	    sb_any_quota_suspended(sb))
+		dquot_resume(sb, -1);
 	sb->s_flags = old_sb_flags;
 	sbi->s_mount_opt = old_opts.s_mount_opt;
 	sbi->s_mount_opt2 = old_opts.s_mount_opt2;

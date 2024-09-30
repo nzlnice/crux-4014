@@ -42,7 +42,6 @@
 #include <linux/fs.h>
 #include <linux/trace.h>
 #include <linux/sched/rt.h>
-#include <linux/coresight-stm.h>
 
 #include "trace.h"
 #include "trace_output.h"
@@ -2203,8 +2202,11 @@ void trace_buffered_event_enable(void)
 	for_each_tracing_cpu(cpu) {
 		page = alloc_pages_node(cpu_to_node(cpu),
 					GFP_KERNEL | __GFP_NORETRY, 0);
-		if (!page)
-			goto failed;
+		/* This is just an optimization and can handle failures */
+		if (!page) {
+			pr_err("Failed to allocate event buffer\n");
+			break;
+		}
 
 		event = page_address(page);
 		memset(event, 0, sizeof(*event));
@@ -2218,10 +2220,6 @@ void trace_buffered_event_enable(void)
 			WARN_ON_ONCE(1);
 		preempt_enable();
 	}
-
-	return;
- failed:
-	trace_buffered_event_disable();
 }
 
 static void enable_trace_buffered_event(void *data)
@@ -2256,11 +2254,9 @@ void trace_buffered_event_disable(void)
 	if (--trace_buffered_event_ref)
 		return;
 
-	preempt_disable();
 	/* For each CPU, set the buffer as used. */
-	smp_call_function_many(tracing_buffer_mask,
-			       disable_trace_buffered_event, NULL, 1);
-	preempt_enable();
+	on_each_cpu_mask(tracing_buffer_mask, disable_trace_buffered_event,
+			 NULL, true);
 
 	/* Wait for all current users to finish */
 	synchronize_sched();
@@ -2269,17 +2265,19 @@ void trace_buffered_event_disable(void)
 		free_page((unsigned long)per_cpu(trace_buffered_event, cpu));
 		per_cpu(trace_buffered_event, cpu) = NULL;
 	}
-	/*
-	 * Make sure trace_buffered_event is NULL before clearing
-	 * trace_buffered_event_cnt.
-	 */
-	smp_wmb();
 
-	preempt_disable();
-	/* Do the work on each cpu */
-	smp_call_function_many(tracing_buffer_mask,
-			       enable_trace_buffered_event, NULL, 1);
-	preempt_enable();
+	/*
+	 * Wait for all CPUs that potentially started checking if they can use
+	 * their event buffer only after the previous synchronize_rcu() call and
+	 * they still read a valid pointer from trace_buffered_event. It must be
+	 * ensured they don't see cleared trace_buffered_event_cnt else they
+	 * could wrongly decide to use the pointed-to buffer which is now freed.
+	 */
+	synchronize_rcu();
+
+	/* For each CPU, relinquish the buffer */
+	on_each_cpu_mask(tracing_buffer_mask, enable_trace_buffered_event, NULL,
+			 true);
 }
 
 static struct ring_buffer *temp_buffer;
@@ -2389,15 +2387,14 @@ int tracepoint_printk_sysctl(struct ctl_table *table, int write,
 	return ret;
 }
 
-void trace_event_buffer_commit(struct trace_event_buffer *fbuffer,
-			       unsigned long len)
+void trace_event_buffer_commit(struct trace_event_buffer *fbuffer)
 {
 	if (static_key_false(&tracepoint_printk_key.key))
 		output_printk(fbuffer);
 
 	event_trigger_unlock_commit(fbuffer->trace_file, fbuffer->buffer,
 				    fbuffer->event, fbuffer->entry,
-				    fbuffer->flags, fbuffer->pc, len);
+				    fbuffer->flags, fbuffer->pc);
 }
 EXPORT_SYMBOL_GPL(trace_event_buffer_commit);
 
@@ -2966,9 +2963,6 @@ int trace_vbprintk(unsigned long ip, const char *fmt, va_list args)
 
 	memcpy(entry->buf, tbuffer, sizeof(u32) * len);
 	if (!call_filter_check_discard(call, entry, buffer, event)) {
-		len = vscnprintf(tbuffer, TRACE_BUF_SIZE, fmt, args);
-		stm_log(OST_ENTITY_TRACE_PRINTK, tbuffer, len+1);
-
 		__buffer_unlock_commit(buffer, event);
 		ftrace_trace_stack(tr, buffer, flags, 6, pc, NULL);
 	}
@@ -3025,7 +3019,6 @@ __trace_array_vprintk(struct ring_buffer *buffer,
 
 	memcpy(&entry->buf, tbuffer, len + 1);
 	if (!call_filter_check_discard(call, entry, buffer, event)) {
-		stm_log(OST_ENTITY_TRACE_PRINTK, entry->buf, len + 1);
 		__buffer_unlock_commit(buffer, event);
 		ftrace_trace_stack(&global_trace, buffer, flags, 6, pc, NULL);
 	}
@@ -3281,8 +3274,15 @@ static void *s_start(struct seq_file *m, loff_t *pos)
 	 * will point to the same string as current_trace->name.
 	 */
 	mutex_lock(&trace_types_lock);
-	if (unlikely(tr->current_trace && iter->trace->name != tr->current_trace->name))
+	if (unlikely(tr->current_trace && iter->trace->name != tr->current_trace->name)) {
+		/* Close iter->trace before switching to the new current tracer */
+		if (iter->trace->close)
+			iter->trace->close(iter);
 		*iter->trace = *tr->current_trace;
+		/* Reopen the new current tracer */
+		if (iter->trace->open)
+			iter->trace->open(iter);
+	}
 	mutex_unlock(&trace_types_lock);
 
 #ifdef CONFIG_TRACER_MAX_TRACE
@@ -5253,8 +5253,7 @@ static int __tracing_resize_ring_buffer(struct trace_array *tr,
 		return ret;
 
 #ifdef CONFIG_TRACER_MAX_TRACE
-	if (!(tr->flags & TRACE_ARRAY_FL_GLOBAL) ||
-	    !tr->current_trace->use_max_tr)
+	if (!tr->current_trace->use_max_tr)
 		goto out;
 
 	ret = ring_buffer_resize(tr->max_buffer.buffer, size, cpu);
@@ -6139,7 +6138,6 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 {
 	struct trace_array *tr = filp->private_data;
 	struct ring_buffer_event *event;
-	struct trace_entry *trace_entry;
 	struct ring_buffer *buffer;
 	struct print_entry *entry;
 	unsigned long irq_flags;
@@ -6177,8 +6175,7 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 		return -EBADF;
 
 	entry = ring_buffer_event_data(event);
-	trace_entry = (struct trace_entry *)entry;
-	entry->ip = trace_entry->pid;
+	entry->ip = _THIS_IP_;
 
 	len = __copy_from_user_inatomic(&entry->buf, ubuf, cnt);
 	if (len) {
@@ -6192,12 +6189,9 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 	if (entry->buf[cnt - 1] != '\n') {
 		entry->buf[cnt] = '\n';
 		entry->buf[cnt + 1] = '\0';
-		stm_log(OST_ENTITY_TRACE_MARKER, entry, sizeof(*entry)+cnt + 2);
-	} else {
+	} else
 		entry->buf[cnt] = '\0';
-		stm_log(OST_ENTITY_TRACE_MARKER, entry, sizeof(*entry)+cnt + 1);
-	}
-	entry->ip = _THIS_IP_;
+
 	__buffer_unlock_commit(buffer, event);
 
 	if (written > 0)

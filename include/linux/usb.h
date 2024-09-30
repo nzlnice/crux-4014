@@ -279,6 +279,11 @@ void usb_put_intf(struct usb_interface *intf);
 #define USB_MAXINTERFACES	32
 #define USB_MAXIADS		(USB_MAXINTERFACES/2)
 
+bool usb_check_bulk_endpoints(
+		const struct usb_interface *intf, const u8 *ep_addrs);
+bool usb_check_int_endpoints(
+		const struct usb_interface *intf, const u8 *ep_addrs);
+
 /*
  * USB Resume Timer: Every Host controller driver should drive the resume
  * signalling on the bus for the amount of time defined by this macro.
@@ -303,7 +308,7 @@ void usb_put_intf(struct usb_interface *intf);
  * should cope with both LPJ calibration errors and devices not following every
  * detail of the USB Specification.
  */
-#define USB_RESUME_TIMEOUT	20 /* ms */
+#define USB_RESUME_TIMEOUT	40 /* ms */
 
 /**
  * struct usb_interface_cache - long-term representation of a device interface
@@ -402,8 +407,6 @@ struct usb_host_bos {
 	struct usb_ssp_cap_descriptor	*ssp_cap;
 	struct usb_ss_container_id_descriptor	*ss_id;
 	struct usb_ptm_cap_descriptor	*ptm_cap;
-	struct usb_config_summary_descriptor	*config_summary;
-	unsigned int	num_config_summary_desc;
 };
 
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
@@ -468,15 +471,6 @@ struct usb_bus {
 	struct mon_bus *mon_bus;	/* non-null when associated */
 	int monitored;			/* non-zero when monitored */
 #endif
-	unsigned skip_resume:1;		/* All USB devices are brought into full
-					 * power state after system resume. It
-					 * is desirable for some buses to keep
-					 * their devices in suspend state even
-					 * after system resume. The devices
-					 * are resumed later when a remote
-					 * wakeup is detected or an interface
-					 * driver starts I/O.
-					 */
 };
 
 struct usb_dev_state;
@@ -817,19 +811,6 @@ static inline bool usb_device_no_sg_constraint(struct usb_device *udev)
 
 /* for drivers using iso endpoints */
 extern int usb_get_current_frame_number(struct usb_device *usb_dev);
-extern int usb_sec_event_ring_setup(struct usb_device *dev,
-	unsigned int intr_num);
-extern int usb_sec_event_ring_cleanup(struct usb_device *dev,
-	unsigned int intr_num);
-
-extern phys_addr_t usb_get_sec_event_ring_phys_addr(
-	struct usb_device *dev, unsigned int intr_num, dma_addr_t *dma);
-extern phys_addr_t usb_get_xfer_ring_phys_addr(struct usb_device *dev,
-	struct usb_host_endpoint *ep, dma_addr_t *dma);
-extern int usb_get_controller_id(struct usb_device *dev);
-
-extern int usb_stop_endpoint(struct usb_device *dev,
-	struct usb_host_endpoint *ep);
 
 /* Sets up a group of bulk endpoints to support multiple stream IDs. */
 extern int usb_alloc_streams(struct usb_interface *interface,
@@ -1582,8 +1563,8 @@ struct urb {
 	int error_count;		/* (return) number of ISO errors */
 	void *context;			/* (in) context for completion */
 	usb_complete_t complete;	/* (in) completion routine */
-	void *priv_data;                /* (in) additional private data */
-	struct usb_iso_packet_descriptor iso_frame_desc[]; /* (in) ISO ONLY */
+	struct usb_iso_packet_descriptor iso_frame_desc[0];
+					/* (in) ISO ONLY */
 };
 
 /* ----------------------------------------------------------------------- */
@@ -1983,11 +1964,8 @@ static inline int usb_translate_errors(int error_code)
 #define USB_DEVICE_REMOVE	0x0002
 #define USB_BUS_ADD		0x0003
 #define USB_BUS_REMOVE		0x0004
-#define USB_BUS_DIED		0x0005
 extern void usb_register_notify(struct notifier_block *nb);
 extern void usb_unregister_notify(struct notifier_block *nb);
-extern void usb_register_atomic_notify(struct notifier_block *nb);
-extern void usb_unregister_atomic_notify(struct notifier_block *nb);
 
 /* debugfs stuff */
 extern struct dentry *usb_debug_root;

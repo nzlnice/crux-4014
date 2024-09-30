@@ -226,18 +226,6 @@ static int get_num_brps(void)
 	return core_has_mismatch_brps() ? brps - 1 : brps;
 }
 
-/* Determine if halting mode is enabled */
-static int halting_mode_enabled(void)
-{
-	u32 dscr;
-
-	ARM_DBG_READ(c0, c1, 0, dscr);
-	WARN_ONCE(dscr & ARM_DSCR_HDBGEN,
-	  "halting debug mode enabled. Unable to access hardware resources.\n");
-
-	return !!(dscr & ARM_DSCR_HDBGEN);
-}
-
 /*
  * In order to access the breakpoint/watchpoint control registers,
  * we must be running in debug monitor mode. Unfortunately, we can
@@ -643,7 +631,7 @@ int arch_validate_hwbkpt_settings(struct perf_event *bp)
 	info->address &= ~alignment_mask;
 	info->ctrl.len <<= offset;
 
-	if (is_default_overflow_handler(bp)) {
+	if (uses_default_overflow_handler(bp)) {
 		/*
 		 * Mismatch breakpoints are required for single-stepping
 		 * breakpoints.
@@ -815,7 +803,7 @@ static void watchpoint_handler(unsigned long addr, unsigned int fsr,
 		 * Otherwise, insert a temporary mismatch breakpoint so that
 		 * we can single-step over the watchpoint trigger.
 		 */
-		if (!is_default_overflow_handler(wp))
+		if (!uses_default_overflow_handler(wp))
 			continue;
 step:
 		enable_single_step(wp, instruction_pointer(regs));
@@ -828,7 +816,7 @@ step:
 		info->trigger = addr;
 		pr_debug("watchpoint fired: address = 0x%x\n", info->trigger);
 		perf_bp_event(wp, regs);
-		if (is_default_overflow_handler(wp))
+		if (uses_default_overflow_handler(wp))
 			enable_single_step(wp, instruction_pointer(regs));
 	}
 
@@ -903,7 +891,7 @@ static void breakpoint_handler(unsigned long unknown, struct pt_regs *regs)
 			info->trigger = addr;
 			pr_debug("breakpoint fired: address = 0x%x\n", addr);
 			perf_bp_event(bp, regs);
-			if (is_default_overflow_handler(bp))
+			if (uses_default_overflow_handler(bp))
 				enable_single_step(bp, addr);
 			goto unlock;
 		}
@@ -1002,17 +990,6 @@ static void reset_ctrl_regs(unsigned int cpu)
 {
 	int i, raw_num_brps, err = 0;
 	u32 val;
-
-	/*
-	 * Bail out without clearing the breakpoint registers if halting
-	 * debug mode or monitor debug mode is enabled. Checking for monitor
-	 * debug mode here ensures we don't clear the breakpoint registers
-	 * across power collapse if save and restore code has already
-	 * preserved the debug register values or they weren't lost and
-	 * monitor mode was already enabled earlier.
-	 */
-	if (halting_mode_enabled() || monitor_mode_enabled())
-		return;
 
 	/*
 	 * v7 debug contains save and restore registers so that debug state

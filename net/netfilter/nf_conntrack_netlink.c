@@ -733,10 +733,6 @@ ctnetlink_conntrack_event(unsigned int events, struct nf_ct_event *item)
 		if (events & (1 << IPCT_SEQADJ) &&
 		    ctnetlink_dump_ct_seq_adj(skb, ct) < 0)
 			goto nla_put_failure;
-
-		if (events & (1 << IPCT_COUNTER) &&
-		    ctnetlink_dump_acct(skb, ct, 0) < 0)
-			goto nla_put_failure;
 	}
 
 #ifdef CONFIG_NF_CONNTRACK_MARK
@@ -1582,23 +1578,12 @@ static int ctnetlink_change_timeout(struct nf_conn *ct,
 				    const struct nlattr * const cda[])
 {
 	u_int32_t timeout = ntohl(nla_get_be32(cda[CTA_TIMEOUT]));
-#if defined(CONFIG_IP_NF_TARGET_NATTYPE_MODULE)
-	bool (*nattype_ref_timer)
-		(unsigned long nattype,
-		unsigned long timeout_value);
-#endif
 
 	ct->timeout = nfct_time_stamp + timeout * HZ;
 
 	if (test_bit(IPS_DYING_BIT, &ct->status))
 		return -ETIME;
 
-/* Refresh the NAT type entry. */
-#if defined(CONFIG_IP_NF_TARGET_NATTYPE_MODULE)
-	nattype_ref_timer = rcu_dereference(nattype_refresh_timer);
-	if (nattype_ref_timer)
-		nattype_ref_timer(ct->nattype_entry, ct->timeout);
-#endif
 	return 0;
 }
 
@@ -2546,7 +2531,9 @@ nla_put_failure:
 	return -1;
 }
 
+#if IS_ENABLED(CONFIG_NF_NAT)
 static const union nf_inet_addr any_addr;
+#endif
 
 static __be32 nf_expect_get_id(const struct nf_conntrack_expect *exp)
 {
@@ -3046,10 +3033,12 @@ ctnetlink_change_expect(struct nf_conntrack_expect *x,
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_NF_NAT)
 static const struct nla_policy exp_nat_nla_policy[CTA_EXPECT_NAT_MAX+1] = {
 	[CTA_EXPECT_NAT_DIR]	= { .type = NLA_U32 },
 	[CTA_EXPECT_NAT_TUPLE]	= { .type = NLA_NESTED },
 };
+#endif
 
 static int
 ctnetlink_parse_expect_nat(const struct nlattr *attr,

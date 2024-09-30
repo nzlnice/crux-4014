@@ -1275,7 +1275,7 @@ static bool tun_can_build_skb(struct tun_struct *tun, struct tun_file *tfile,
 	if (zerocopy)
 		return false;
 
-	if (SKB_DATA_ALIGN(len + TUN_RX_PAD) +
+	if (SKB_DATA_ALIGN(len + TUN_RX_PAD + XDP_PACKET_HEADROOM) +
 	    SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) > PAGE_SIZE)
 		return false;
 
@@ -1520,10 +1520,6 @@ drop:
 		kfree_skb(skb);
 		return -EINVAL;
 	}
-
-	if (!(tun->flags & IFF_NO_PI))
-		if (pi.flags & htons(CHECKSUM_UNNECESSARY))
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 	switch (tun->flags & TUN_TYPE_MASK) {
 	case IFF_TUN:

@@ -373,7 +373,7 @@ find_encoder(struct drm_connector *connector, int type)
 		if (!id)
 			break;
 
-		enc = drm_encoder_find(dev, NULL, id);
+		enc = drm_encoder_find(dev, id);
 		if (!enc)
 			continue;
 		nv_encoder = nouveau_encoder(enc);
@@ -441,7 +441,7 @@ nouveau_connector_ddc_detect(struct drm_connector *connector)
 		if (id == 0)
 			break;
 
-		encoder = drm_encoder_find(dev, NULL, id);
+		encoder = drm_encoder_find(dev, id);
 		if (!encoder)
 			continue;
 		nv_encoder = nouveau_encoder(encoder);
@@ -966,7 +966,7 @@ nouveau_connector_get_modes(struct drm_connector *connector)
 	 * "native" mode as some VBIOS tables require us to use the
 	 * pixel clock as part of the lookup...
 	 */
-	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS)
+	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS && nv_connector->native_mode)
 		nouveau_connector_detect_depth(connector);
 
 	if (nv_encoder->dcb->type == DCB_OUTPUT_TV)

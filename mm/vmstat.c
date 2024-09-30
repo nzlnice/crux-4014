@@ -1095,7 +1095,6 @@ const char * const vmstat_text[] = {
 	"nr_dirtied",
 	"nr_written",
 	"nr_kernel_misc_reclaimable",
-	"nr_unreclaimable_pages",
 
 	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",
@@ -1105,7 +1104,6 @@ const char * const vmstat_text[] = {
 	/* enum vm_event_item counters */
 	"pgpgin",
 	"pgpgout",
-	"pgpgoutclean",
 	"pswpin",
 	"pswpout",
 
@@ -1221,10 +1219,7 @@ const char * const vmstat_text[] = {
 	"swap_ra",
 	"swap_ra_hit",
 #endif
-#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
-	"speculative_pgfault"
-#endif
-#endif /* CONFIG_VM_EVENT_COUNTERS */
+#endif /* CONFIG_VM_EVENTS_COUNTERS */
 };
 #endif /* CONFIG_PROC_FS || CONFIG_SYSFS || CONFIG_NUMA */
 
@@ -1778,7 +1773,7 @@ int vmstat_refresh(struct ctl_table *table, int write,
 
 static void vmstat_update(struct work_struct *w)
 {
-	if (refresh_cpu_vm_stats(true) && !cpu_isolated(smp_processor_id())) {
+	if (refresh_cpu_vm_stats(true)) {
 		/*
 		 * Counters were updated so we expect more updates
 		 * to occur in the future. Keep on running the
@@ -1870,8 +1865,7 @@ static void vmstat_shepherd(struct work_struct *w)
 	for_each_online_cpu(cpu) {
 		struct delayed_work *dw = &per_cpu(vmstat_work, cpu);
 
-		if (!delayed_work_pending(dw) && need_update(cpu) &&
-		     !cpu_isolated(cpu))
+		if (!delayed_work_pending(dw) && need_update(cpu))
 			queue_delayed_work_on(cpu, mm_percpu_wq, dw, 0);
 	}
 	put_online_cpus();

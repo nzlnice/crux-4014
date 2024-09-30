@@ -248,7 +248,6 @@ static struct ipv6_devconf ipv6_devconf __read_mostly = {
 	.enhanced_dad           = 1,
 	.addr_gen_mode		= IN6_ADDR_GEN_MODE_EUI64,
 	.disable_policy		= 0,
-	.accept_ra_prefix_route = 1,
 };
 
 static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
@@ -304,7 +303,6 @@ static struct ipv6_devconf ipv6_devconf_dflt __read_mostly = {
 	.enhanced_dad           = 1,
 	.addr_gen_mode		= IN6_ADDR_GEN_MODE_EUI64,
 	.disable_policy		= 0,
-	.accept_ra_prefix_route = 1,
 };
 
 /* Check if link is ready: is it up and is a valid qdisc available */
@@ -328,9 +326,8 @@ static void addrconf_del_dad_work(struct inet6_ifaddr *ifp)
 static void addrconf_mod_rs_timer(struct inet6_dev *idev,
 				  unsigned long when)
 {
-	if (!timer_pending(&idev->rs_timer))
+	if (!mod_timer(&idev->rs_timer, jiffies + when))
 		in6_dev_hold(idev);
-	mod_timer(&idev->rs_timer, jiffies + when);
 }
 
 static void addrconf_mod_dad_work(struct inet6_ifaddr *ifp,
@@ -1280,7 +1277,7 @@ retry:
 	 * idev->desync_factor if it's larger
 	 */
 	cnf_temp_preferred_lft = READ_ONCE(idev->cnf.temp_prefered_lft);
-	max_desync_factor = min_t(__u32,
+	max_desync_factor = min_t(long,
 				  idev->cnf.max_desync_factor,
 				  cnf_temp_preferred_lft - regen_advance);
 
@@ -2211,16 +2208,6 @@ static int ipv6_generate_eui64(u8 *eui, struct net_device *dev)
 	case ARPHRD_TUNNEL6:
 	case ARPHRD_IP6GRE:
 		return addrconf_ifid_ip6tnl(eui, dev);
-	case ARPHRD_RAWIP: {
-		struct in6_addr lladdr;
-
-		if (ipv6_get_lladdr(dev, &lladdr, IFA_F_TENTATIVE))
-			get_random_bytes(eui, 8);
-		else
-			memcpy(eui, lladdr.s6_addr + 8, 8);
-
-		return 0;
-	}
 	}
 	return -1;
 }
@@ -2465,12 +2452,18 @@ static void manage_tempaddrs(struct inet6_dev *idev,
 			ipv6_ifa_notify(0, ift);
 	}
 
-	if ((create || list_empty(&idev->tempaddr_list)) &&
-	    idev->cnf.use_tempaddr > 0) {
+	/* Also create a temporary address if it's enabled but no temporary
+	 * address currently exists.
+	 * However, we get called with valid_lft == 0, prefered_lft == 0, create == false
+	 * as part of cleanup (ie. deleting the mngtmpaddr).
+	 * We don't want that to result in creating a new temporary ip address.
+	 */
+	if (list_empty(&idev->tempaddr_list) && (valid_lft || prefered_lft))
+		create = true;
+
+	if (create && idev->cnf.use_tempaddr > 0) {
 		/* When a new public address is created as described
 		 * in [ADDRCONF], also create a new temporary address.
-		 * Also create a temporary address if it's enabled but
-		 * no temporary address currently exists.
 		 */
 		read_unlock_bh(&idev->lock);
 		ipv6_create_tempaddr(ifp);
@@ -2673,11 +2666,8 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len, bool sllao)
 				flags |= RTF_EXPIRES;
 				expires = jiffies_to_clock_t(rt_expires);
 			}
-			if (dev->ip6_ptr->cnf.accept_ra_prefix_route) {
-				addrconf_prefix_route(&pinfo->prefix,
-						      pinfo->prefix_len,
-						      dev, expires, flags);
-			}
+			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
+					      dev, expires, flags);
 		}
 		ip6_rt_put(rt);
 	}
@@ -3260,8 +3250,7 @@ static void addrconf_dev_config(struct net_device *dev)
 	    (dev->type != ARPHRD_IP6GRE) &&
 	    (dev->type != ARPHRD_IPGRE) &&
 	    (dev->type != ARPHRD_TUNNEL) &&
-	    (dev->type != ARPHRD_NONE) &&
-	    (dev->type != ARPHRD_RAWIP)) {
+	    (dev->type != ARPHRD_NONE)) {
 		/* Alas, we support only Ethernet autoconfiguration. */
 		idev = __in6_dev_get(dev);
 		if (!IS_ERR_OR_NULL(idev) && dev->flags & IFF_UP &&
@@ -6401,13 +6390,6 @@ static const struct ctl_table addrconf_sysctl[] = {
 	{
 		.procname	= "seg6_enabled",
 		.data		= &ipv6_devconf.seg6_enabled,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = proc_dointvec,
-	},
-	{
-		.procname	= "accept_ra_prefix_route",
-		.data		= &ipv6_devconf.accept_ra_prefix_route,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
